@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Contas Financeiras — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Contas Financeiras</h1>
+  <p class="subtitle">Contas usadas no controle de caixa (dinheiro físico, banco, carteiras digitais etc.).</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <button type="button" onclick="abrirNovaConta()">+ Nova conta</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Nome</th><th>Tipo</th><th>Saldo inicial</th><th>Saldo atual</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:380px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('contas-financeiras.html');
+let contasCache = [];
+
+const TIPOS_CONTA = [
+  { value: 'caixa', label: 'Caixa (dinheiro físico)' },
+  { value: 'banco', label: 'Banco' },
+  { value: 'carteira_digital', label: 'Carteira digital' },
+  { value: 'outro', label: 'Outro' }
+];
+
+function formConta(titulo, valores, onSubmit) {
+  const tipoOpts = TIPOS_CONTA.map((t) => `<option value="${t.value}" ${valores.tipo === t.value ? 'selected' : ''}>${t.label}</option>`).join('');
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-conta-modal">
+      <div class="field" style="min-width:100%"><label>Nome</label><input name="nome" value="${escapeAttr(valores.nome || '')}" required /></div>
+      <div class="field" style="min-width:100%"><label>Tipo</label><select name="tipo">${tipoOpts}</select></div>
+      ${valores.id ? '' : '<div class="field" style="min-width:100%"><label>Saldo inicial (R$)</label><input name="saldoInicial" type="number" step="0.01" value="0" /></div>'}
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-conta-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await onSubmit(Object.fromEntries(fd.entries()));
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovaConta() {
+  formConta('Nova conta financeira', {}, async (body) => {
+    await apiPost('/api/contas-financeiras', body);
+    toast('Conta cadastrada com sucesso!');
+  });
+}
+window.abrirNovaConta = abrirNovaConta;
+
+function abrirEdicaoConta(id) {
+  const c = contasCache.find((x) => x.id === id);
+  if (!c) return;
+  formConta('Editar conta financeira', c, async (body) => {
+    await apiPatch(`/api/contas-financeiras/${id}`, body);
+    toast('Conta atualizada com sucesso!');
+  });
+}
+window.abrirEdicaoConta = abrirEdicaoConta;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? contasCache : contasCache.filter((c) => c.nome.toLowerCase().includes(termo));
+  const tipoLabel = (v) => (TIPOS_CONTA.find((t) => t.value === v) || {}).label || v;
+  document.getElementById('tbody').innerHTML = lista.map((c) => `
+    <tr class="clickable" onclick="abrirEdicaoConta(${c.id})">
+      <td>${escapeHtml(c.nome)}</td>
+      <td>${escapeHtml(tipoLabel(c.tipo))}</td>
+      <td class="muted">${money(c.saldoInicial)}</td>
+      <td><b>${money(c.saldoAtual)}</b></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="muted">Nenhuma conta cadastrada.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  contasCache = await apiGet('/api/contas-financeiras');
+  render();
+}
+load();
+</script>
+</body>
+</html>

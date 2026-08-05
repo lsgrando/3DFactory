@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Usuários — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Usuários</h1>
+  <p class="subtitle">Cadastre quem tem acesso ao sistema. Clique na sua própria linha para alterar a senha.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome ou e-mail..." /></div>
+    <button type="button" id="btn-novo-usuario" style="display:none" onclick="abrirNovoUsuario()">+ Novo usuário</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Cadastrado em</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:340px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('usuarios.html');
+let usuariosCache = [];
+let usuarioAtual = null;
+
+function abrirNovoUsuario() {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Novo usuário</h2>
+    <form id="form-usuario-modal">
+      <div class="field" style="margin-bottom:10px"><label>Nome</label><input name="nome" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>E-mail</label><input name="email" type="email" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Senha</label><input name="senha" type="password" minlength="6" required /></div>
+      <div class="field" style="margin-bottom:10px"><label><input type="checkbox" name="papel" value="admin" /> É administrador (pode cadastrar outros usuários)</label></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Cadastrar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-usuario-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPost('/api/usuarios', Object.fromEntries(fd.entries()));
+    toast('Usuário cadastrado com sucesso!');
+    closeModal();
+    load();
+  });
+}
+window.abrirNovoUsuario = abrirNovoUsuario;
+
+function abrirAlterarSenha(id) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Alterar senha</h2>
+    <form id="form-senha">
+      <div class="field" style="margin-bottom:10px"><label>Nova senha</label><input name="senhaNova" type="password" minlength="6" required /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-senha').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPatch(`/api/usuarios/${id}/senha`, Object.fromEntries(fd.entries()));
+    toast('Senha alterada com sucesso!');
+    closeModal();
+  });
+}
+window.abrirAlterarSenha = abrirAlterarSenha;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? usuariosCache : usuariosCache.filter((u) => u.nome.toLowerCase().includes(termo) || u.email.toLowerCase().includes(termo));
+  document.getElementById('tbody').innerHTML = lista.map(u => {
+    const souEu = u.id === usuarioAtual.id;
+    return `
+    <tr class="${souEu ? 'clickable' : ''}" ${souEu ? `onclick="abrirAlterarSenha(${u.id})"` : ''}>
+      <td>${escapeHtml(u.nome)}${souEu ? ' <span class="muted">(você)</span>' : ''}</td>
+      <td>${escapeHtml(u.email)}</td>
+      <td>${u.papel === 'admin' ? badge('concluido', 'Admin') : badge('novo', 'Vendas')}</td>
+      <td class="muted">${fmtDate(u.createdAt)}</td>
+    </tr>
+  `;
+  }).join('') || '<tr><td colspan="4" class="muted">Nenhum usuário cadastrado.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  const [usuarios, me] = await Promise.all([apiGet('/api/usuarios'), apiGet('/api/auth/me')]);
+  usuariosCache = usuarios;
+  usuarioAtual = me;
+  document.getElementById('btn-novo-usuario').style.display = usuarioAtual.papel === 'admin' ? '' : 'none';
+  render();
+}
+load();
+</script>
+</body>
+</html>

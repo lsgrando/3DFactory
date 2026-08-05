@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Vendas — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Vendas</h1>
+  <p class="subtitle">Registre o pedido do cliente e acompanhe orçamento, aprovação, produção, entrega e pagamento.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca-pedido" placeholder="Buscar por #pedido, cliente ou Id da plataforma..." /></div>
+    <button type="button" onclick="abrirNovoPedido()">+ Novo pedido</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>#</th><th>Cliente</th><th>Produtos</th><th>Status</th><th>Valor</th><th>Entrega</th><th>Pagamento</th><th>Ações</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <h2>Fila de produção</h2>
+  <div class="card" id="fila"></div>
+
+  <h2>Imprimindo agora</h2>
+  <div class="card" id="imprimindo"></div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:600px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" style="max-height:90vh;overflow:auto;" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('vendas.html');
+
+let filamentosCache = [];
+let produtosCache = [];
+let clientesCache = [];
+let contasCache = [];
+let impressorasCache = [];
+let variacoesCache = [];
+let usuariosCache = [];
+let pedidosCache = [];
+let paramsCache = {};
+let itemSeq = 0;
+let pedidoEmEdicaoId = null;
+let pedidoEmEdicaoStatus = null;
+
+const CUSTO_FILAMENTO_PADRAO = 120; // R$/kg usado quando a variação não tem filamento sugerido
+const POTENCIA_PADRAO = 200; // W usado quando a variação não tem impressora sugerida
+
+function estimarFaixaPreco(v) {
+  const filamento = v.filamentoIdSugerido ? filamentosCache.find((f) => f.id === v.filamentoIdSugerido) : null;
+  const impressora = v.impressoraIdSugerida ? impressorasCache.find((i) => i.id === v.impressoraIdSugerida) : null;
+  const precoPorKg = filamento ? filamento.precoPorKg : CUSTO_FILAMENTO_PADRAO;
+  const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
+  const tarifaKwh = paramsCache.tarifaKwh || 0;
+  const custoFilamento = (precoPorKg / 1000) * (v.pesoGramas || 0);
+  const custoEnergia = ((potenciaW * (v.tempoHoras || 0)) / 1000) * tarifaKwh;
+  const custoTotal = custoFilamento + custoEnergia;
+  return { min: custoTotal * 2, max: custoTotal * 4 }; // margem de 100% a 300%
+}
+
+function corFilamentoItens() {
+  return filamentosCache.map(f => ({ value: `${f.material} ${f.cor}`, label: `${f.material} — ${f.cor}${f.marca ? ' (' + f.marca + ')' : ''}`, hex: f.corHex }));
+}
+function filamentoItens() {
+  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
+}
+function impressoraItens() {
+  return impressorasCache.map(i => ({ value: i.id, label: `${i.nome} (${i.potenciaW}W)` }));
+}
+function clienteItens() {
+  return clientesCache.map(c => ({ value: c.id, label: c.nome }));
+}
+function corSugeridaDoProduto(produtoId) {
+  const variacao = variacoesCache.find(v => v.produtoId === produtoId && v.filamentoIdSugerido);
+  if (!variacao) return '';
+  const f = filamentosCache.find(f => f.id === variacao.filamentoIdSugerido);
+  return f ? `${f.material} ${f.cor}` : '';
+}
+function usuarioOptions() {
+  const atual = window.currentUser ? window.currentUser.nome : '';
+  return '<option value="">— Selecionar —</option>' +
+    usuariosCache.map(u => `<option value="${escapeAttr(u.nome)}" ${u.nome === atual ? 'selected' : ''}>${escapeHtml(u.nome)}</option>`).join('');
+}
+
+function mostrarInfoProduto(div, produtoId) {
+  const produto = produtoId ? produtosCache.find(p => p.id === produtoId) : null;
+  const thumbField = div.querySelector('.produto-thumb-field');
+  const thumb = div.querySelector('.produto-thumb');
+  const variacaoSelectField = div.querySelector('.variacao-select-field');
+  const variacaoWrap = div.querySelector('.variacao-select-wrap');
+  if (produto && produto.imagem) { thumb.src = produto.imagem; thumbField.style.display = ''; }
+  else { thumbField.style.display = 'none'; }
+  const variacoesDoProduto = produto ? variacoesCache.filter(v => v.produtoId === produto.id) : [];
+  if (variacoesDoProduto.length) {
+    variacaoWrap.innerHTML = `<input class="search-select-input" placeholder="Buscar variação..." autocomplete="off" /><div class="search-select-list"></div>`;
+    wireSearchSelect(variacaoWrap, variacoesDoProduto.map(v => ({ value: v.id, label: v.nome })), (val) => {
+      if (val) aplicarVariacaoNoItem(div, val);
+    }, '', '— Selecionar —');
+    variacaoSelectField.style.display = '';
+  } else {
+    variacaoSelectField.style.display = 'none';
+  }
+}
+
+// Único ponto que aplica uma variação cadastrada: preenche o texto da variação e,
+// se o item já tiver a seção de orçamento montada (div._filCtrl/_impCtrl), também
+// pré-preenche peso/tempo/filamento/impressora — evita perguntar a mesma coisa 2x.
+function aplicarVariacaoNoItem(div, variacaoId) {
+  const v = variacoesCache.find(x => x.id === Number(variacaoId));
+  if (!v) return;
+  div.querySelector('[name="variacao"]').value = v.nome;
+  if (v.pesoGramas) { const el = div.querySelector('.orc-peso'); if (el) el.value = v.pesoGramas; }
+  if (v.tempoHoras) { const el = div.querySelector('.orc-tempo'); if (el) el.value = v.tempoHoras; }
+  if (v.filamentoIdSugerido && div._filCtrl) div._filCtrl.setValue(v.filamentoIdSugerido);
+  if (v.impressoraIdSugerida && div._impCtrl) div._impCtrl.setValue(v.impressoraIdSugerida);
+  if (div._recalcularFaixa) div._recalcularFaixa();
+}
+
+function aplicarProdutoSelecionado(div, produtoId) {
+  const produto = produtoId ? produtosCache.find(p => p.id === produtoId) : null;
+  const novoProdutoField = div.querySelector('.chk-novo-produto-field');
+  const novoProdutoFields = div.querySelector('.novo-produto-fields');
+  if (produto) {
+    div.querySelector('[name="descricao"]').value = produto.descricao || produto.nome;
+    div.querySelector('[name="dimensoes"]').value = produto.dimensoes || '';
+    if (div._corCtrl) div._corCtrl.setValue(corSugeridaDoProduto(produto.id));
+    div.querySelector('[name="modeloRef"]').value = produto.modeloRef || '';
+    div.querySelector('[name="pecaJaFeita"]').value = 'true';
+    novoProdutoField.style.display = 'none';
+    novoProdutoFields.style.display = 'none';
+    div.querySelector('.chk-novo-produto').checked = false;
+  } else {
+    novoProdutoField.style.display = '';
+  }
+  mostrarInfoProduto(div, produtoId);
+}
+
+function orcamentoFieldsHtml(item) {
+  const o = item.orcamento;
+  return `
+    <div class="field"><label>Filamento usado</label>
+      <div class="search-select orc-filamentoId">
+        <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
+        <div class="search-select-list"></div>
+      </div>
+    </div>
+    <div class="field"><label>Impressora sugerida</label>
+      <div class="search-select orc-impressoraId">
+        <input class="search-select-input" placeholder="Buscar impressora..." autocomplete="off" />
+        <div class="search-select-list"></div>
+      </div>
+    </div>
+    <div class="field"><label>Peso da peça (g)</label><input class="orc-peso" type="number" step="0.01" value="${o ? o.pesoGramas : ''}" required /></div>
+    <div class="field"><label>Tempo de impressão (h)</label><input class="orc-tempo" type="number" step="0.01" value="${o ? o.tempoHoras : ''}" required /></div>
+    <div class="field"><label>Tarifa kWh (R$)</label><input class="orc-tarifa" type="number" step="0.01" placeholder="${paramsCache.tarifaKwh || ''}" value="${o ? o.tarifaKwh : ''}" /></div>
+    <div class="field"><label>Margem (%)</label><input class="orc-margem" type="number" step="1" placeholder="${paramsCache.margemPadrao || ''}" value="${o && o.margemPercentual != null ? o.margemPercentual : ''}" /></div>
+    <div class="field"><label>Preço final (R$)</label><input class="orc-valor" type="number" step="0.01" placeholder="usa a margem acima se vazio" value="${o ? o.precoVenda : ''}" /></div>
+    <div class="field"><label>Validade do orçamento</label><input class="orc-validade" type="date" value="${o && o.validadeOrcamento ? o.validadeOrcamento.slice(0, 10) : ''}" /></div>
+    <div class="orc-faixa-estimada muted" style="min-width:100%;font-size:13px"></div>
+    ${o ? `<div class="price-box" style="min-width:100%;margin-top:0"><div>Orçado: <b>${money(o.precoVenda)}</b> <span class="muted">(${o.pesoGramas}g, ${o.tempoHoras}h)</span>${o.validadeOrcamento ? ` · válido até ${escapeAttr(o.validadeOrcamento.slice(0, 10))}` : ''}</div></div>` : ''}
+  `;
+}
+
+// Custo total (filamento + energia) com os valores atuais dos campos do item — mesma
+// fórmula do servidor (lib/pricing.js). Retorna null se faltar algo pra calcular.
+function custoTotalAtual(div) {
+  const section = div.querySelector('.orcamento-item-section');
+  const peso = Number(section.querySelector('.orc-peso').value) || 0;
+  const tempo = Number(section.querySelector('.orc-tempo').value) || 0;
+  const filamento = filamentosCache.find(f => f.id === Number(div._filCtrl.getValue()));
+  if (!filamento || !peso || !tempo) return null;
+  const impressora = impressorasCache.find(i => i.id === Number(div._impCtrl.getValue()));
+  const tarifaInput = section.querySelector('.orc-tarifa').value;
+  const tarifaKwh = tarifaInput !== '' ? Number(tarifaInput) : (paramsCache.tarifaKwh || 0);
+  const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
+  const custoFilamento = (filamento.precoPorKg / 1000) * peso;
+  const custoEnergia = ((potenciaW * tempo) / 1000) * tarifaKwh;
+  return custoFilamento + custoEnergia;
+}
+
+// Calcula ao vivo (sem salvar) a faixa de preço sugerida — mesma faixa de margem
+// 100%-300% já usada em orcamento.html. Clicar numa linha preenche Margem e Preço final;
+// editar a Margem manualmente volta a deixar o Preço final livre (recalculado ao salvar).
+function recalcularFaixaEstimada(div) {
+  if (!div._filCtrl || !div._impCtrl) return;
+  const section = div.querySelector('.orcamento-item-section');
+  const faixaEl = section.querySelector('.orc-faixa-estimada');
+  const custoTotal = custoTotalAtual(div);
+  if (custoTotal === null) { faixaEl.innerHTML = ''; return; }
+  const margemInput = section.querySelector('.orc-margem').value;
+  const margemAtual = margemInput !== '' ? Number(margemInput) : null;
+  const linhas = [100, 150, 200, 300].map((m) => {
+    const preco = custoTotal * (1 + m / 100);
+    const ativo = margemAtual === m;
+    return `<div class="orc-faixa-linha${ativo ? ' ativo' : ''}" data-margem="${m}" data-preco="${preco.toFixed(2)}">
+      <span>${m}%</span><span>${money(preco)}</span>
+    </div>`;
+  }).join('');
+  faixaEl.innerHTML = `<div class="orc-faixa-custo">Custo estimado: <b>${money(custoTotal)}</b></div>${linhas}`;
+  faixaEl.querySelectorAll('.orc-faixa-linha').forEach((el) => {
+    el.addEventListener('click', () => {
+      section.querySelector('.orc-margem').value = el.dataset.margem;
+      section.querySelector('.orc-valor').value = el.dataset.preco;
+      recalcularFaixaEstimada(div);
+    });
+  });
+}
+
+function wireOrcamentoFields(div, item) {
+  const section = div.querySelector('.orcamento-item-section');
+  const o = item.orcamento;
+  section.innerHTML = orcamentoFieldsHtml(item);
+  div._filCtrl = wireSearchSelect(section.querySelector('.orc-filamentoId'), filamentoItens(), () => recalcularFaixaEstimada(div), o ? o.filamentoId : '', 'Selecione um filamento');
+  div._impCtrl = wireSearchSelect(section.querySelector('.orc-impressoraId'), impressoraItens(), () => recalcularFaixaEstimada(div), o ? o.impressoraSugeridaId : '', 'Selecione uma impressora');
+  div._recalcularFaixa = () => recalcularFaixaEstimada(div);
+  ['orc-peso', 'orc-tempo', 'orc-tarifa', 'orc-margem'].forEach((cls) => {
+    section.querySelector(`.${cls}`).addEventListener('input', () => recalcularFaixaEstimada(div));
+  });
+  // Editar a margem manualmente (não via clique na faixa) volta o Preço final pro modo
+  // automático — evita salvar um preço "preso" de uma seleção anterior.
+  section.querySelector('.orc-margem').addEventListener('input', () => {
+    section.querySelector('.orc-valor').value = '';
+  });
+  recalcularFaixaEstimada(div);
+  // Chamado pelo botão "Concluir" do item — salva o orçamento se houver dados suficientes
+  // (filamento + peso + tempo). Retorna false silenciosamente se não houver nada pra salvar
+  // ainda, pra não travar quem só quer recolher o item sem orçar agora.
+  div._salvarOrcamentoSeCompleto = async () => {
+    const filamentoId = div._filCtrl.getValue();
+    const pesoGramas = section.querySelector('.orc-peso').value;
+    const tempoHoras = section.querySelector('.orc-tempo').value;
+    if (!filamentoId || !pesoGramas || !tempoHoras) return false;
+    const body = {
+      filamentoId,
+      impressoraId: div._impCtrl.getValue(),
+      pesoGramas,
+      tempoHoras,
+      tarifaKwh: section.querySelector('.orc-tarifa').value,
+      validadeOrcamento: section.querySelector('.orc-validade').value
+    };
+    const valorFinal = section.querySelector('.orc-valor').value;
+    if (valorFinal !== '') {
+      const custoTotal = custoTotalAtual(div) || 0;
+      body.margemFixa = String(Number(valorFinal) - custoTotal);
+    } else {
+      body.margemPercentual = section.querySelector('.orc-margem').value;
+    }
+    await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${item.id}/orcamento`, body);
+    return true;
+  };
+}
+
+function renderResumoItem(div, valores) {
+  const summary = div.querySelector('.item-summary');
+  const descricao = div.querySelector('[name="descricao"]').value || '(sem descrição)';
+  const quantidade = div.querySelector('[name="quantidade"]').value || 1;
+  const cor = div.querySelector('[name="corFilamento"]').value;
+  const variacao = div.querySelector('[name="variacao"]').value;
+  const produtoId = div.dataset.produtoId;
+  const produto = produtoId ? produtosCache.find(p => p.id === Number(produtoId)) : null;
+  const thumbHtml = produto && produto.imagem
+    ? `<img class="thumb item-summary-thumb" src="${escapeAttr(produto.imagem)}" />`
+    : `<span class="thumb item-summary-thumb" style="display:inline-block"></span>`;
+  const subTxt = [cor, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
+  const o = valores.orcamento;
+  const precoHtml = o
+    ? `<span class="item-summary-price">${money(o.precoVenda)}</span>`
+    : `<span class="item-summary-price muted">Não orçado</span>`;
+  summary.innerHTML = `
+    ${thumbHtml}
+    <div class="item-summary-info">
+      <div class="item-summary-title">${escapeAttr(quantidade)}x ${escapeAttr(descricao)}</div>
+      <div class="item-summary-sub">${subTxt}</div>
+    </div>
+    ${precoHtml}
+    <div class="item-summary-actions">
+      <button type="button" class="small secondary btn-editar-item">✎ Editar</button>
+      <button type="button" class="small danger btn-remover-item-resumo">✕</button>
+    </div>
+  `;
+  summary.querySelector('.btn-editar-item').addEventListener('click', () => alternarModoItem(div, true));
+  summary.querySelector('.btn-remover-item-resumo').addEventListener('click', () => removerItem(div));
+}
+
+function alternarModoItem(div, expandir) {
+  const summary = div.querySelector('.item-summary');
+  const details = div.querySelector('.item-details');
+  if (expandir) {
+    summary.style.display = 'none';
+    details.style.display = 'flex';
+  } else {
+    details.style.display = 'none';
+    summary.style.display = 'flex';
+  }
+}
+
+async function removerItem(div) {
+  const itemId = div.dataset.itemId;
+  if (itemId && pedidoEmEdicaoId) {
+    if (!['novo', 'orcamento_pronto'].includes(pedidoEmEdicaoStatus)) {
+      toast('Só é possível remover produtos antes da aprovação do pedido.', 'error');
+      return;
+    }
+    if (document.querySelectorAll('.item-block').length <= 1) {
+      toast('O pedido precisa ter ao menos um produto.', 'error');
+      return;
+    }
+    if (!confirm('Remover este produto do pedido?')) return;
+    await apiDelete(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}`);
+    toast('Produto removido do pedido.');
+    div.remove();
+    pedidosCache = await apiGet('/api/pedidos');
+    renderPedidos();
+    const atualizado = pedidosCache.find((x) => x.id === pedidoEmEdicaoId);
+    if (atualizado) pedidoEmEdicaoStatus = atualizado.status;
+  } else {
+    if (document.querySelectorAll('.item-block').length <= 1) return;
+    div.remove();
+  }
+}
+
+function addItemBlock(valores) {
+  valores = valores || {};
+  const uid = ++itemSeq;
+  const div = document.createElement('div');
+  div.className = 'item-block';
+  div.dataset.uid = uid;
+  if (valores.id) div.dataset.itemId = valores.id;
+  if (valores.produtoId) div.dataset.produtoId = valores.produtoId;
+  div.innerHTML = `
+    <div class="item-summary" style="display:none"></div>
+    <div class="item-details">
+      <div class="field" style="min-width:220px"><label>Produto cadastrado</label>
+        <div class="produto-combobox">
+          <input type="text" class="produto-combobox-input" placeholder="Buscar produto..." autocomplete="off" />
+          <div class="produto-combobox-list"></div>
+        </div>
+      </div>
+      <div class="field produto-thumb-field" style="display:${valores.imagem ? '' : 'none'}"><label>&nbsp;</label><img class="thumb-lg produto-thumb" src="${escapeAttr(valores.imagem || '')}" /></div>
+      <div class="field" style="min-width:100%"><label>Descrição da peça</label><textarea name="descricao" required placeholder="O que o cliente pediu">${escapeAttr(valores.descricao || '')}</textarea></div>
+      <div class="field"><label>Já imprimimos essa peça antes?</label>
+        <select name="pecaJaFeita"><option value="false" ${!valores.pecaJaFeita ? 'selected' : ''}>Não</option><option value="true" ${valores.pecaJaFeita ? 'selected' : ''}>Sim</option></select>
+      </div>
+      <div class="field" style="min-width:260px"><label>Link do modelo (Makerworld etc.) ou referência</label><input name="modeloRef" placeholder="https://..." value="${escapeAttr(valores.modeloRef || '')}" /></div>
+      <div class="field"><label>Dimensões desejadas (mm)</label><input name="dimensoes" placeholder="ex: 100x50x30" value="${escapeAttr(valores.dimensoes || '')}" /></div>
+      <div class="field variacao-select-field" style="display:none"><label>Variação cadastrada</label><div class="search-select variacao-select-wrap"></div></div>
+      <div class="field"><label>Variação</label><input name="variacao" placeholder="ex: P, M, G, altura +2cm" value="${escapeAttr(valores.variacao || '')}" /></div>
+      <div class="field"><label>Cor do filamento</label>
+        <div class="search-select cor-filamento-wrap">
+          <input type="hidden" name="corFilamento" />
+          <input class="search-select-input" placeholder="Buscar cor..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+      </div>
+      <div class="field"><label>Quantidade</label><input name="quantidade" type="number" min="1" value="${escapeAttr(valores.quantidade || 1)}" /></div>
+      <div class="field chk-novo-produto-field"><label><input type="checkbox" class="chk-novo-produto" /> Cadastrar este produto no catálogo</label></div>
+      <div class="novo-produto-fields" style="display:none;min-width:100%;flex-wrap:wrap;gap:10px;">
+        <div class="field"><label>Nome do produto (catálogo)</label><input class="input-nome-produto" /></div>
+        <div class="field"><label>Imagem</label><input type="file" class="input-imagem-produto" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+      </div>
+      ${valores.id ? '<div class="orcamento-item-section item-details-footer" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end"></div>' : ''}
+      <div class="row item-details-footer" style="width:100%">
+        <button type="button" class="small secondary btn-concluir-item">Concluir</button>
+        <button type="button" class="small danger btn-remover-item-detalhe">✕ Remover produto</button>
+      </div>
+    </div>
+  `;
+  // Monta a seção de orçamento ANTES do seletor de cor, pra que o auto-link cor→filamento
+  // (mais abaixo) já encontre div._filCtrl pronto mesmo no carregamento inicial do item.
+  if (valores.id) wireOrcamentoFields(div, valores);
+  div._corCtrl = wireSearchSelect(div.querySelector('.cor-filamento-wrap'), corFilamentoItens(), (val) => {
+    div.querySelector('[name="corFilamento"]').value = val;
+    if (val && div._filCtrl && !div._filCtrl.getValue()) {
+      const match = filamentosCache.find(f => `${f.material} ${f.cor}` === val);
+      if (match) div._filCtrl.setValue(match.id);
+    }
+  }, valores.corFilamento || '', 'Digitar manualmente');
+
+  div.querySelector('.btn-remover-item-detalhe').addEventListener('click', () => removerItem(div));
+  div.querySelector('.btn-concluir-item').addEventListener('click', async () => {
+    if (!div.querySelector('[name="descricao"]').value.trim()) {
+      toast('Preencha a descrição da peça antes de concluir.', 'error');
+      return;
+    }
+    if (div._salvarOrcamentoSeCompleto) {
+      const salvou = await div._salvarOrcamentoSeCompleto();
+      if (salvou) {
+        toast('Orçamento salvo com sucesso!');
+        pedidosCache = await apiGet('/api/pedidos');
+        renderPedidos();
+        renderFila();
+        abrirEditarPedido(pedidoEmEdicaoId);
+        return;
+      }
+    }
+    renderResumoItem(div, valores);
+    alternarModoItem(div, false);
+  });
+  wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosCache, (produtoId) => {
+    div.dataset.produtoId = produtoId || '';
+    aplicarProdutoSelecionado(div, produtoId);
+  }, valores.produtoId || null);
+  if (valores.produtoId) mostrarInfoProduto(div, valores.produtoId);
+  div.querySelector('.chk-novo-produto').addEventListener('change', (e) => {
+    div.querySelector('.novo-produto-fields').style.display = e.target.checked ? 'flex' : 'none';
+  });
+
+  if (valores.id) {
+    renderResumoItem(div, valores);
+    alternarModoItem(div, false);
+  }
+
+  document.getElementById('itens-container').appendChild(div);
+}
+
+async function collectItem(block) {
+  const produtoIdSelecionado = block.dataset.produtoId || '';
+  const item = {
+    descricao: block.querySelector('[name="descricao"]').value,
+    pecaJaFeita: block.querySelector('[name="pecaJaFeita"]').value === 'true',
+    modeloRef: block.querySelector('[name="modeloRef"]').value,
+    dimensoes: block.querySelector('[name="dimensoes"]').value,
+    variacao: block.querySelector('[name="variacao"]').value,
+    corFilamento: block.querySelector('[name="corFilamento"]').value,
+    quantidade: block.querySelector('[name="quantidade"]').value,
+    produtoId: produtoIdSelecionado || null,
+    imagem: null
+  };
+  if (produtoIdSelecionado) {
+    const produto = produtosCache.find(p => p.id === Number(produtoIdSelecionado));
+    item.imagem = produto ? produto.imagem : null;
+    return item;
+  }
+  const chkNovo = block.querySelector('.chk-novo-produto');
+  if (chkNovo.checked) {
+    const nome = block.querySelector('.input-nome-produto').value || item.descricao;
+    const file = block.querySelector('.input-imagem-produto').files[0];
+    const produtoBody = {
+      nome,
+      descricao: item.descricao,
+      dimensoes: item.dimensoes,
+      corFilamento: item.corFilamento,
+      modeloRef: item.modeloRef
+    };
+    if (file) produtoBody.imagemBase64 = await fileToBase64(file);
+    const produto = await apiPost('/api/produtos', produtoBody);
+    toast(`Produto "${produto.nome}" cadastrado no catálogo!`);
+    item.produtoId = produto.id;
+    item.imagem = produto.imagem;
+  }
+  return item;
+}
+
+function abrirNovoPedido() {
+  itemSeq = 0;
+  pedidoEmEdicaoId = null;
+  pedidoEmEdicaoStatus = null;
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Nova solicitação de orçamento</h2>
+    <form id="form-novo">
+      <div class="inline">
+        <div class="field"><label>Seu nome (vendedor)</label><select name="vendedor" required>${usuarioOptions()}</select></div>
+        <div class="field" style="min-width:220px"><label>Cliente cadastrado</label>
+          <div class="search-select" id="ss-cliente">
+            <input class="search-select-input" placeholder="Buscar cliente..." autocomplete="off" />
+            <div class="search-select-list"></div>
+          </div>
+        </div>
+        <div class="field"><label>Nome do cliente</label><input name="cliente" required /></div>
+        <div class="field"><label>Contato (WhatsApp)</label><input name="contato" /></div>
+        <div class="field"><label>Id do pedido na plataforma (Shopee etc.)</label><input name="idPlataforma" placeholder="opcional" /></div>
+        <div class="field" id="chk-novo-cliente-field"><label><input type="checkbox" id="chk-novo-cliente" /> Cadastrar este cliente</label></div>
+      </div>
+      <h3>Produtos do pedido</h3>
+      <div id="itens-container"></div>
+      <button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>
+      <div class="inline">
+        <div class="field" style="min-width:100%"><label>Observações do pedido</label><textarea name="observacoes" placeholder="Prazo, urgência, detalhes extras"></textarea></div>
+      </div>
+      <div class="row" style="width:100%">
+        <button type="submit">Criar solicitação</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+
+  const clienteCtrl = wireSearchSelect(document.getElementById('ss-cliente'), clienteItens(), (val) => {
+    const form = document.getElementById('form-novo');
+    const cliente = clientesCache.find(c => c.id === Number(val));
+    const chkField = document.getElementById('chk-novo-cliente-field');
+    if (cliente) {
+      form.cliente.value = cliente.nome;
+      form.contato.value = cliente.contato || '';
+      chkField.style.display = 'none';
+      document.getElementById('chk-novo-cliente').checked = false;
+    } else {
+      form.cliente.value = '';
+      form.contato.value = '';
+      chkField.style.display = '';
+    }
+  }, '', '— Digitar manualmente —');
+  document.getElementById('btn-add-item').addEventListener('click', addItemBlock);
+  addItemBlock();
+
+  document.getElementById('form-novo').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    let clienteId = clienteCtrl.getValue() || null;
+    if (!clienteId && document.getElementById('chk-novo-cliente').checked) {
+      const cliente = await apiPost('/api/clientes', { nome: form.cliente.value, contato: form.contato.value });
+      toast(`Cliente "${cliente.nome}" cadastrado!`);
+      clienteId = cliente.id;
+    }
+    const blocks = [...document.querySelectorAll('.item-block')];
+    const itens = [];
+    for (const block of blocks) {
+      itens.push(await collectItem(block));
+    }
+    const body = {
+      clienteId,
+      vendedor: form.vendedor.value,
+      cliente: form.cliente.value,
+      contato: form.contato.value,
+      idPlataforma: form.idPlataforma.value,
+      observacoes: form.observacoes.value,
+      itens
+    };
+    await apiPost('/api/pedidos', body);
+    toast('Solicitação de orçamento criada com sucesso!');
+    closeModal();
+    load();
+  });
+}
+window.abrirNovoPedido = abrirNovoPedido;
+
+async function loadCatalogos() {
+  [filamentosCache, produtosCache, clientesCache, contasCache, impressorasCache, variacoesCache, usuariosCache, paramsCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/produtos'), apiGet('/api/clientes'), apiGet('/api/contas-financeiras'), apiGet('/api/impressoras'), apiGet('/api/variacoes'), apiGet('/api/usuarios'), apiGet('/api/params')
+  ]);
+}
+
+async function aprovar(id) {
+  const forma = prompt('Forma de pagamento combinada com o cliente (ex: Pix, cartão):', '');
+  await apiPatch(`/api/pedidos/${id}/aprovacao`, { decisao: 'aprovado', formaPagamentoCombinada: forma || '' });
+  toast('Pedido aprovado e enviado para a fila de produção!');
+  load();
+}
+async function recusar(id) {
+  const motivo = prompt('Motivo da recusa:', '');
+  await apiPatch(`/api/pedidos/${id}/aprovacao`, { decisao: 'recusado', motivo: motivo || '' });
+  toast('Pedido marcado como recusado.');
+  load();
+}
+async function marcarEntrega(id, status) {
+  await apiPatch(`/api/pedidos/${id}/entrega`, { statusEntrega: status });
+  toast(status === 'entregue' ? 'Entrega confirmada!' : 'Pedido marcado como saiu para entrega!');
+  load();
+}
+function abrirRegistrarPagamento(id) {
+  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Registrar pagamento</h2>
+    <form class="inline" id="form-pagamento">
+      <div class="field" style="min-width:100%"><label>Conta que recebeu</label><select name="contaId">${contaOpts}</select></div>
+      <div class="field" style="min-width:100%"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-pagamento').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPatch(`/api/pedidos/${id}/pagamento`, Object.fromEntries(fd.entries()));
+    toast('Pagamento registrado!');
+    closeModal();
+    load();
+  });
+}
+function abrirEditarPedido(id) {
+  const p = pedidosCache.find((x) => x.id === id);
+  if (!p) return;
+  pedidoEmEdicaoId = p.id;
+  pedidoEmEdicaoStatus = p.status;
+  itemSeq = 0;
+  const podeMexerItens = ['novo', 'orcamento_pronto'].includes(p.status);
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Editar pedido #${p.id}</h2>
+    <form id="form-editar-pedido">
+      <div class="inline">
+        <div class="field"><label>Cliente</label><input name="cliente" value="${escapeAttr(p.cliente)}" /></div>
+        <div class="field"><label>Contato</label><input name="contato" value="${escapeAttr(p.contato)}" /></div>
+        <div class="field"><label>Vendedor</label><input name="vendedor" value="${escapeAttr(p.vendedor)}" /></div>
+        <div class="field"><label>Id do pedido na plataforma (Shopee etc.)</label><input name="idPlataforma" value="${escapeAttr(p.idPlataforma)}" /></div>
+      </div>
+      <div class="field" style="min-width:100%;margin-top:10px"><label>Observações</label><textarea name="observacoes">${escapeAttr(p.observacoes)}</textarea></div>
+      <h3>Produtos</h3>
+      <div id="itens-container"></div>
+      ${podeMexerItens
+        ? '<button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>'
+        : '<p class="muted" style="font-size:13px;margin-bottom:14px">Pedido já aprovado — não é mais possível adicionar ou remover produtos.</p>'}
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  p.itens.forEach((it) => addItemBlock(it));
+  if (podeMexerItens) {
+    document.getElementById('btn-add-item').addEventListener('click', () => addItemBlock());
+  }
+
+  document.getElementById('form-editar-pedido').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    await apiPatch(`/api/pedidos/${p.id}`, {
+      cliente: form.cliente.value,
+      contato: form.contato.value,
+      vendedor: form.vendedor.value,
+      idPlataforma: form.idPlataforma.value,
+      observacoes: form.observacoes.value
+    });
+    for (const block of form.querySelectorAll('.item-block')) {
+      const itemId = block.dataset.itemId;
+      if (itemId) {
+        await apiPatch(`/api/pedidos/${p.id}/itens/${itemId}`, {
+          descricao: block.querySelector('[name="descricao"]').value,
+          quantidade: block.querySelector('[name="quantidade"]').value,
+          dimensoes: block.querySelector('[name="dimensoes"]').value,
+          variacao: block.querySelector('[name="variacao"]').value,
+          corFilamento: block.querySelector('[name="corFilamento"]').value,
+          produtoId: block.dataset.produtoId || null
+        });
+      } else {
+        const novoItem = await collectItem(block);
+        await apiPost(`/api/pedidos/${p.id}/itens`, novoItem);
+      }
+    }
+    toast('Pedido atualizado com sucesso!');
+    closeModal();
+    load();
+  });
+}
+window.aprovar = aprovar; window.recusar = recusar; window.marcarEntrega = marcarEntrega; window.abrirRegistrarPagamento = abrirRegistrarPagamento; window.abrirEditarPedido = abrirEditarPedido;
+
+// ---------- Produção ----------
+async function atribuir(pedidoId, itemId, selectEl) {
+  await apiPatch(`/api/pedidos/${pedidoId}/itens/${itemId}/producao`, { action: 'atribuir_impressora', impressoraId: selectEl.value });
+  toast('Impressora atribuída!');
+  load();
+}
+async function iniciar(pedidoId, itemId) {
+  await apiPatch(`/api/pedidos/${pedidoId}/itens/${itemId}/producao`, { action: 'iniciar' });
+  toast('Impressão iniciada!');
+  load();
+}
+async function concluirImpressao(pedidoId, itemId) {
+  if (!confirm('Concluir impressão? Isso vai dar baixa no estoque de filamento.')) return;
+  await apiPatch(`/api/pedidos/${pedidoId}/itens/${itemId}/producao`, { action: 'concluir' });
+  toast('Impressão concluída! Estoque atualizado.');
+  load();
+}
+async function falha(pedidoId, itemId) {
+  const motivo = prompt('Motivo da falha:', '');
+  if (motivo === null) return;
+  const gramas = prompt('Gramas de filamento perdidas nessa tentativa (opcional):', '0');
+  await apiPatch(`/api/pedidos/${pedidoId}/itens/${itemId}/producao`, { action: 'falha', motivo, gramasReimpressao: gramas });
+  toast('Falha registrada.', 'error');
+  load();
+}
+window.atribuir = atribuir; window.iniciar = iniciar; window.concluirImpressao = concluirImpressao; window.falha = falha;
+
+function itensDe(status) {
+  const out = [];
+  pedidosCache.forEach(p => p.itens.forEach(it => { if (it.status === status) out.push({ p, it }); }));
+  return out;
+}
+function impressoraSelect(p, it) {
+  const opts = impressorasCache.map(i => `<option value="${i.id}" ${it.impressoraId === i.id ? 'selected' : ''}>${escapeHtml(i.nome)}</option>`).join('');
+  return `<select onclick="event.stopPropagation()" onchange="event.stopPropagation(); atribuir(${p.id}, ${it.id}, this)" style="width:150px">${opts}</select>`;
+}
+function renderFila() {
+  const fila = itensDe('na_fila');
+  document.getElementById('fila').innerHTML = fila.length ? `
+    <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Peso/Tempo</th><th>Impressora</th><th>Ações</th></tr></thead>
+    <tbody>${fila.map(({ p, it }) => `<tr>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>${it.orcamento ? it.orcamento.pesoGramas + 'g / ' + it.orcamento.tempoHoras + 'h' : '—'}</td>
+      <td>${impressoraSelect(p, it)}</td>
+      <td>
+        <button class="small" onclick="event.stopPropagation(); iniciar(${p.id}, ${it.id})" ${!it.impressoraId ? 'disabled title="Atribua uma impressora primeiro"' : ''}>Iniciar impressão</button>
+        <button class="small danger" onclick="event.stopPropagation(); falha(${p.id}, ${it.id})">Registrar falha</button>
+      </td>
+    </tr>`).join('')}</tbody></table>` : '<p class="muted">Fila vazia.</p>';
+
+  const imprimindo = itensDe('imprimindo');
+  document.getElementById('imprimindo').innerHTML = imprimindo.length ? `
+    <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Impressora</th><th>Início</th><th>Ações</th></tr></thead>
+    <tbody>${imprimindo.map(({ p, it }) => `<tr>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>${it.impressoraId ? escapeHtml((impressorasCache.find(i=>i.id===it.impressoraId)||{}).nome) : '—'}</td>
+      <td class="muted">${fmtDate(it.inicioImpressao)}</td>
+      <td>
+        <button class="small" onclick="event.stopPropagation(); concluirImpressao(${p.id}, ${it.id})">Concluir</button>
+        <button class="small danger" onclick="event.stopPropagation(); falha(${p.id}, ${it.id})">Registrar falha</button>
+      </td>
+    </tr>`).join('')}</tbody></table>` : '<p class="muted">Nenhuma impressão em andamento.</p>';
+}
+
+function acoes(p) {
+  let a = '';
+  if (p.status === 'orcamento_pronto') {
+    a += `<button class="small" onclick="event.stopPropagation(); aprovar(${p.id})">Cliente aprovou</button>`;
+    a += `<button class="small danger" onclick="event.stopPropagation(); recusar(${p.id})">Cliente recusou</button>`;
+  } else if (['novo'].includes(p.status)) {
+    a += `<span class="muted">Aguardando orçamento</span>`;
+  } else if (['na_fila', 'imprimindo'].includes(p.status)) {
+    a += `<span class="muted">Em produção</span>`;
+  } else if (p.status === 'concluido') {
+    if (!p.statusEntrega || p.statusEntrega === 'aguardando') a += `<button class="small secondary" onclick="event.stopPropagation(); marcarEntrega(${p.id},'em_entrega')">Saiu para entrega</button>`;
+    if (p.statusEntrega === 'em_entrega') a += `<button class="small secondary" onclick="event.stopPropagation(); marcarEntrega(${p.id},'entregue')">Marcar entregue</button>`;
+  }
+  if (['concluido','na_fila','imprimindo'].includes(p.status) && p.statusPagamento === 'pendente') {
+    a += `<button class="small secondary" onclick="event.stopPropagation(); abrirRegistrarPagamento(${p.id})">Registrar pagamento</button>`;
+  }
+  if (p.itens.some(it => it.orcamento)) {
+    a += `<button class="small secondary" onclick="event.stopPropagation(); window.open('orcamento-imprimir.html?id=${p.id}', '_blank')">Exportar PDF</button>`;
+  }
+  return a || '—';
+}
+
+function produtos(p) {
+  return p.itens.map(it => `${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}`).join('<br>');
+}
+
+function valorPedido(p) {
+  const orcados = p.itens.filter(it => it.orcamento);
+  if (!orcados.length) return '—';
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda, 0);
+  return money(total) + (orcados.length < p.itens.length ? ` <span class="muted">(${orcados.length}/${p.itens.length})</span>` : '');
+}
+
+function renderPedidos() {
+  const termo = document.getElementById('busca-pedido').value.trim().toLowerCase();
+  const filtrados = !termo ? pedidosCache : pedidosCache.filter((p) =>
+    String(p.id).includes(termo) ||
+    (p.cliente || '').toLowerCase().includes(termo) ||
+    (p.idPlataforma || '').toLowerCase().includes(termo)
+  );
+  document.getElementById('tbody').innerHTML = filtrados.map(p => `
+    <tr class="clickable" onclick="abrirEditarPedido(${p.id})">
+      <td>#${p.id}</td>
+      <td>${escapeHtml(p.cliente)}<div class="muted">${escapeHtml(p.contato || '')}${p.idPlataforma ? `<br>${escapeHtml(p.idPlataforma)}` : ''}</div></td>
+      <td>${produtos(p)}</td>
+      <td>${badge(p.status)}${p.statusEntrega ? ' ' + badge(p.statusEntrega) : ''}</td>
+      <td>${valorPedido(p)}</td>
+      <td>${p.statusEntrega ? badge(p.statusEntrega) : '—'}</td>
+      <td>${badge(p.statusPagamento)}</td>
+      <td>${acoes(p)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="8" class="muted">Nenhum pedido encontrado.</td></tr>';
+}
+document.getElementById('busca-pedido').addEventListener('input', renderPedidos);
+
+async function load() {
+  await loadCatalogos();
+  pedidosCache = await apiGet('/api/pedidos');
+  renderPedidos();
+  renderFila();
+}
+load();
+</script>
+</body>
+</html>

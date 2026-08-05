@@ -1,0 +1,12 @@
+{
+  "name": "impressao3d-sistema",
+  "version": "1.0.0",
+  "description": "Sistema de gestão para empresa de impressão 3D (vendas, orçamento, produção, estoque de filamento)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

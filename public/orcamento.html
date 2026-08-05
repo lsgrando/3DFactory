@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Orçamento — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Orçamento</h1>
+  <p class="subtitle">Abra o modelo, fatie e informe os dados abaixo — o preço é calculado automaticamente.</p>
+
+  <h2>Aguardando orçamento</h2>
+  <div class="card" id="pendentes"></div>
+
+  <h2>Orçamentos prontos (aguardando repasse ao cliente)</h2>
+  <div class="card" id="prontos"></div>
+
+  <h2>Parâmetros</h2>
+  <div class="card">
+    <form class="inline" id="form-params">
+      <div class="field"><label>Tarifa de energia (R$/kWh)</label><input name="tarifaKwh" type="number" step="0.01" /></div>
+      <div class="field"><label>Margem padrão (%)</label><input name="margemPadrao" type="number" step="1" /></div>
+      <button type="submit">Salvar parâmetros</button>
+    </form>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:520px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" style="max-height:90vh;overflow:auto;" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('orcamento.html');
+let filamentosCache = [];
+let impressorasCache = [];
+let variacoesCache = [];
+let produtosCache = [];
+let paramsCache = {};
+let produtoSelecionadoOrc = null;
+
+const CUSTO_FILAMENTO_PADRAO = 120; // R$/kg usado quando a variação não tem filamento sugerido
+const POTENCIA_PADRAO = 200; // W usado quando a variação não tem impressora sugerida
+
+function estimarFaixaPreco(v) {
+  const filamento = v.filamentoIdSugerido ? filamentosCache.find((f) => f.id === v.filamentoIdSugerido) : null;
+  const impressora = v.impressoraIdSugerida ? impressorasCache.find((i) => i.id === v.impressoraIdSugerida) : null;
+  const precoPorKg = filamento ? filamento.precoPorKg : CUSTO_FILAMENTO_PADRAO;
+  const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
+  const tarifaKwh = paramsCache.tarifaKwh || 0;
+  const custoFilamento = (precoPorKg / 1000) * (v.pesoGramas || 0);
+  const custoEnergia = ((potenciaW * (v.tempoHoras || 0)) / 1000) * tarifaKwh;
+  const custoTotal = custoFilamento + custoEnergia;
+  return { min: custoTotal * 2, max: custoTotal * 4 }; // margem de 100% a 300%
+}
+
+let filSelectCtrl = null;
+let impSelectCtrl = null;
+
+function aplicarVariacaoPorId(variacaoId) {
+  const form = document.getElementById('form-orc');
+  const v = variacoesCache.find((x) => x.id === Number(variacaoId));
+  const faixaEl = document.getElementById('faixa-estimada');
+  if (!v) { if (faixaEl) faixaEl.textContent = ''; return; }
+  if (v.pesoGramas) form.pesoGramas.value = v.pesoGramas;
+  if (v.tempoHoras) form.tempoHoras.value = v.tempoHoras;
+  if (v.filamentoIdSugerido && filSelectCtrl) filSelectCtrl.setValue(v.filamentoIdSugerido);
+  if (v.impressoraIdSugerida && impSelectCtrl) impSelectCtrl.setValue(v.impressoraIdSugerida);
+  if (faixaEl && v.precoVenda != null) {
+    faixaEl.textContent = `Preço de venda cadastrado para essa variação: ${money(v.precoVenda)}`;
+  } else if (faixaEl && v.pesoGramas && v.tempoHoras) {
+    const { min, max } = estimarFaixaPreco(v);
+    faixaEl.textContent = `Estimativa com margem de 100% a 300%: ${money(min)} – ${money(max)}`;
+  } else if (faixaEl) {
+    faixaEl.textContent = '';
+  }
+}
+window.aplicarVariacaoPorId = aplicarVariacaoPorId;
+
+function variacaoSelectHtml(produtoId) {
+  const variacoesDoProduto = produtoId ? variacoesCache.filter((v) => v.produtoId === produtoId) : [];
+  if (!variacoesDoProduto.length) return '';
+  return `
+    <div class="field" style="min-width:100%"><label>Variação já cadastrada (opcional, pré-preenche os campos abaixo)</label>
+      <div class="search-select" id="ss-variacao">
+        <input class="search-select-input" placeholder="Buscar variação..." autocomplete="off" />
+        <div class="search-select-list"></div>
+      </div>
+      <div id="faixa-estimada" class="muted" style="margin-top:4px;font-size:13px"></div>
+    </div>
+  `;
+}
+
+function wireVariacaoSelectIfPresent(produtoId) {
+  const el = document.getElementById('ss-variacao');
+  if (!el) return;
+  const variacoesDoProduto = produtoId ? variacoesCache.filter((v) => v.produtoId === produtoId) : [];
+  const itens = variacoesDoProduto.map((v) => {
+    let faixaTxt = '';
+    if (v.precoVenda != null) faixaTxt = ` — ${money(v.precoVenda)}`;
+    else if (v.pesoGramas && v.tempoHoras) {
+      const faixa = estimarFaixaPreco(v);
+      faixaTxt = ` — ≈ ${money(faixa.min)} a ${money(faixa.max)}`;
+    }
+    return { value: v.id, label: `${v.nome}${v.pesoGramas ? ` (${v.pesoGramas}g, ${v.tempoHoras || 0}h)` : ''}${faixaTxt}` };
+  });
+  wireSearchSelect(el, itens, (val) => { if (val) aplicarVariacaoPorId(val); }, '', '— Selecionar —');
+}
+
+function filamentoItens() {
+  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg, estoque ${f.estoqueAtualGramas}g)`, hex: f.corHex }));
+}
+function impressoraItens() {
+  return impressorasCache.map(i => ({ value: i.id, label: `${i.nome} (${i.potenciaW}W)` }));
+}
+
+function openOrcamentoForm(p, item) {
+  produtoSelecionadoOrc = item.produtoId || null;
+  const filItens = filamentoItens();
+  const impItens = impressoraItens();
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Orçar pedido #${p.id} — ${escapeHtml(p.cliente)}</h2>
+    <div class="pedido-detail">
+      <div><span>Descrição:</span> ${escapeHtml(item.descricao)}</div>
+      <div><span>Dimensões desejadas:</span> ${escapeHtml(item.dimensoes || '—')}</div>
+      <div><span>Variação:</span> ${escapeHtml(item.variacao || '—')}</div>
+      <div><span>Cor pedida:</span> ${escapeHtml(item.corFilamento || '—')}</div>
+      <div><span>Quantidade:</span> ${item.quantidade}</div>
+      <div style="grid-column:1/-1"><span>Modelo/link:</span> ${item.modeloRef ? `<a href="${escapeAttr(safeUrl(item.modeloRef))}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.modeloRef)}</a>` : '—'}</div>
+    </div>
+    <form class="inline" id="form-orc">
+      <div class="field" style="min-width:220px"><label>Produto cadastrado (opcional, pré-preenche os campos abaixo)</label>
+        <div class="produto-combobox" id="produto-combobox-orc">
+          <input type="text" class="produto-combobox-input" placeholder="Buscar produto..." autocomplete="off" />
+          <div class="produto-combobox-list"></div>
+        </div>
+      </div>
+      <div id="variacao-select-wrap" style="min-width:100%">${variacaoSelectHtml(item.produtoId)}</div>
+      <div class="field"><label>Filamento usado</label>
+        <div class="search-select" id="ss-filamentoId">
+          <input type="hidden" name="filamentoId" />
+          <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+      </div>
+      <div class="field"><label>Impressora sugerida</label>
+        <div class="search-select" id="ss-impressoraId">
+          <input type="hidden" name="impressoraId" />
+          <input class="search-select-input" placeholder="Buscar impressora..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+      </div>
+      <div class="field"><label>Peso da peça (g)</label><input name="pesoGramas" type="number" step="0.01" required /></div>
+      <div class="field"><label>Tempo de impressão (h)</label><input name="tempoHoras" type="number" step="0.01" required /></div>
+      <div class="field"><label>Tarifa kWh (R$)</label><input name="tarifaKwh" type="number" step="0.01" placeholder="${paramsCache.tarifaKwh}" /></div>
+      <div class="field"><label>Margem (%)</label><input name="margemPercentual" type="number" step="1" placeholder="${paramsCache.margemPadrao}" /></div>
+      <div class="field"><label>Validade do orçamento</label><input name="validadeOrcamento" type="date" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Calcular e salvar orçamento</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+    <div id="preview"></div>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  filSelectCtrl = wireSearchSelect(document.getElementById('ss-filamentoId'), filItens, (val) => {
+    document.querySelector('#ss-filamentoId [name="filamentoId"]').value = val;
+  }, filItens[0] ? filItens[0].value : '', 'Selecione um filamento');
+  impSelectCtrl = wireSearchSelect(document.getElementById('ss-impressoraId'), impItens, (val) => {
+    document.querySelector('#ss-impressoraId [name="impressoraId"]').value = val;
+  }, impItens[0] ? impItens[0].value : '', 'Selecione uma impressora');
+  wireProdutoCombobox(document.getElementById('produto-combobox-orc'), produtosCache, (produtoId) => {
+    produtoSelecionadoOrc = produtoId;
+    document.getElementById('variacao-select-wrap').innerHTML = variacaoSelectHtml(produtoSelecionadoOrc);
+    wireVariacaoSelectIfPresent(produtoSelecionadoOrc);
+  }, item.produtoId);
+  wireVariacaoSelectIfPresent(item.produtoId);
+
+  document.getElementById('form-orc').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    if (produtoSelecionadoOrc !== (item.produtoId || null)) {
+      await apiPatch(`/api/pedidos/${p.id}/itens/${item.id}`, { produtoId: produtoSelecionadoOrc });
+    }
+    const r = await apiPatch(`/api/pedidos/${p.id}/itens/${item.id}/orcamento`, body);
+    toast('Orçamento salvo com sucesso!');
+    closeModal();
+    load();
+  });
+}
+window.openOrcamentoForm = openOrcamentoForm;
+
+async function load() {
+  const [pedidos, filamentos, impressoras, params, variacoes, produtos] = await Promise.all([
+    apiGet('/api/pedidos'), apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/params'), apiGet('/api/variacoes'), apiGet('/api/produtos')
+  ]);
+  filamentosCache = filamentos; impressorasCache = impressoras; paramsCache = params; variacoesCache = variacoes; produtosCache = produtos;
+
+  document.querySelector('[name="tarifaKwh"]').value = params.tarifaKwh;
+  document.querySelector('[name="margemPadrao"]').value = params.margemPadrao;
+
+  const pendentes = [];
+  pedidos.forEach(p => p.itens.forEach(it => { if (it.status === 'novo') pendentes.push({ p, it }); }));
+  document.getElementById('pendentes').innerHTML = pendentes.length ? `
+    <table>
+      <thead><tr><th>Pedido</th><th>Cliente</th><th>Descrição</th><th>Dimensões</th><th>Variação</th><th>Cor</th><th>Qtd</th><th></th></tr></thead>
+      <tbody>
+        ${pendentes.map(({ p, it }) => `<tr class="clickable" onclick='openOrcamentoForm(${JSON.stringify(p).replace(/'/g, "&apos;")}, ${JSON.stringify(it).replace(/'/g, "&apos;")})'>
+          <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${escapeHtml(it.descricao)}</td><td>${escapeHtml(it.dimensoes || '—')}</td><td>${escapeHtml(it.variacao || '—')}</td><td>${escapeHtml(it.corFilamento || '—')}</td><td>${it.quantidade}</td>
+          <td><button class="small" onclick='event.stopPropagation(); openOrcamentoForm(${JSON.stringify(p).replace(/'/g, "&apos;")}, ${JSON.stringify(it).replace(/'/g, "&apos;")})'>Orçar</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : '<p class="muted">Nenhuma solicitação pendente.</p>';
+
+  const prontos = pedidos.filter(p => p.status === 'orcamento_pronto');
+  document.getElementById('prontos').innerHTML = prontos.length ? `
+    <table>
+      <thead><tr><th>#</th><th>Cliente</th><th>Produtos orçados</th><th>Custo total</th><th>Preço de venda total</th><th></th></tr></thead>
+      <tbody>
+        ${prontos.map(p => `<tr>
+          <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td>
+          <td>${p.itens.map(it => `${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` (${escapeHtml(it.variacao)})` : ''} — ${money(it.orcamento.precoVenda)}${it.orcamento.validadeOrcamento ? ` (validade ${escapeHtml(it.orcamento.validadeOrcamento)})` : ''}`).join('<br>')}</td>
+          <td>${money(p.itens.reduce((s, it) => s + it.orcamento.custoTotal, 0))}</td>
+          <td><b>${money(p.itens.reduce((s, it) => s + it.orcamento.precoVenda, 0))}</b></td>
+          <td><button class="small secondary" onclick="window.open('orcamento-imprimir.html?id=${p.id}', '_blank')">Exportar PDF</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : '<p class="muted">Nenhum orçamento aguardando repasse.</p>';
+}
+
+document.getElementById('form-params').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  await apiPatch('/api/params', Object.fromEntries(fd.entries()));
+  toast('Parâmetros atualizados com sucesso!');
+  load();
+});
+
+load();
+</script>
+</body>
+</html>

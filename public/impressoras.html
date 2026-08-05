@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Impressoras — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Impressoras</h1>
+  <p class="subtitle">Cadastro das impressoras usadas na produção.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <button type="button" onclick="abrirNovaImpressora()">+ Nova impressora</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Nome</th><th>Potência</th><th>Status</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:380px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('impressoras.html');
+let impressorasCache = [];
+
+function formImpressora(titulo, valores, onSubmit) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-impressora-modal">
+      <div class="field" style="min-width:100%"><label>Nome</label><input name="nome" value="${escapeAttr(valores.nome || '')}" required /></div>
+      <div class="field" style="min-width:100%"><label>Potência (W)</label><input name="potenciaW" type="number" value="${valores.potenciaW || ''}" required /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-impressora-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await onSubmit(Object.fromEntries(fd.entries()));
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovaImpressora() {
+  formImpressora('Nova impressora', {}, async (body) => {
+    await apiPost('/api/impressoras', body);
+    toast('Impressora cadastrada com sucesso!');
+  });
+}
+window.abrirNovaImpressora = abrirNovaImpressora;
+
+function abrirEdicaoImpressora(id) {
+  const i = impressorasCache.find((x) => x.id === id);
+  if (!i) return;
+  formImpressora('Editar impressora', i, async (body) => {
+    await apiPatch(`/api/impressoras/${id}`, body);
+    toast('Impressora atualizada com sucesso!');
+  });
+}
+window.abrirEdicaoImpressora = abrirEdicaoImpressora;
+
+async function removerImpressora(id) {
+  const i = impressorasCache.find((x) => x.id === id);
+  if (!confirm(`Remover ${i ? i.nome : ''}? Essa ação não pode ser desfeita.`)) return;
+  await apiDelete(`/api/impressoras/${id}`);
+  toast('Impressora removida.');
+  load();
+}
+window.removerImpressora = removerImpressora;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? impressorasCache : impressorasCache.filter((i) => i.nome.toLowerCase().includes(termo));
+  document.getElementById('tbody').innerHTML = lista.map((i) => `
+    <tr class="clickable" onclick="abrirEdicaoImpressora(${i.id})">
+      <td>${escapeHtml(i.nome)}</td>
+      <td>${i.potenciaW}W</td>
+      <td>${i.ativa ? badge('concluido', 'Ativa') : badge('recusado', 'Inativa')}</td>
+      <td><button class="small danger" onclick="event.stopPropagation(); removerImpressora(${i.id})">Remover</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="muted">Nenhuma impressora cadastrada.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  impressorasCache = await apiGet('/api/impressoras');
+  render();
+}
+load();
+</script>
+</body>
+</html>

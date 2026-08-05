@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Sócios — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Sócios</h1>
+  <p class="subtitle">Sócios que podem pagar despesas do próprio bolso, a receber depois da empresa.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <button type="button" onclick="abrirNovoSocio()">+ Novo sócio</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Nome</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:340px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('socios.html');
+let sociosCache = [];
+
+function formSocio(titulo, valores, onSubmit) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form id="form-socio-modal">
+      <div class="field" style="margin-bottom:10px"><label>Nome</label><input name="nome" value="${escapeAttr(valores.nome || '')}" required /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-socio-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await onSubmit(Object.fromEntries(fd.entries()));
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovoSocio() {
+  formSocio('Novo sócio', {}, async (body) => {
+    await apiPost('/api/socios', body);
+    toast('Sócio cadastrado com sucesso!');
+  });
+}
+window.abrirNovoSocio = abrirNovoSocio;
+
+function abrirEdicaoSocio(id) {
+  const s = sociosCache.find((x) => x.id === id);
+  if (!s) return;
+  formSocio('Editar sócio', s, async (body) => {
+    await apiPatch(`/api/socios/${id}`, body);
+    toast('Sócio atualizado com sucesso!');
+  });
+}
+window.abrirEdicaoSocio = abrirEdicaoSocio;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? sociosCache : sociosCache.filter((s) => s.nome.toLowerCase().includes(termo));
+  document.getElementById('tbody').innerHTML = lista.map((s) => `
+    <tr class="clickable" onclick="abrirEdicaoSocio(${s.id})"><td>${escapeHtml(s.nome)}</td></tr>
+  `).join('') || '<tr><td class="muted">Nenhum sócio cadastrado.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  sociosCache = await apiGet('/api/socios');
+  render();
+}
+load();
+</script>
+</body>
+</html>

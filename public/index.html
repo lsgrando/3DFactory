@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Dashboard — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Dashboard</h1>
+  <p class="subtitle">Visão geral do fluxo, do orçamento à entrega.</p>
+
+  <div class="card">
+    <div class="inline">
+      <div class="field"><label>De</label><input type="date" id="filtro-de" /></div>
+      <div class="field"><label>Até</label><input type="date" id="filtro-ate" /></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="secondary" id="btn-limpar-filtro">Limpar período</button></div>
+    </div>
+  </div>
+
+  <div class="grid" id="stats"></div>
+
+  <h2>Alertas</h2>
+  <div id="alertas"></div>
+
+  <h2 id="titulo-pedidos">Últimos pedidos</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>#</th><th>Cliente</th><th>Descrição</th><th>Status</th><th>Pagamento</th><th>Criado em</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+<script src="app.js"></script>
+<script>
+renderNav('index.html');
+
+let pedidosCache = [];
+let alertasCache = null;
+
+function descricaoPedido(p) {
+  return p.itens.map(it => `${it.quantidade}x ${escapeHtml(it.descricao)}`).join(', ');
+}
+
+function pedidosNoPeriodo() {
+  const de = document.getElementById('filtro-de').value;
+  const ate = document.getElementById('filtro-ate').value;
+  if (!de && !ate) return pedidosCache;
+  return pedidosCache.filter(p => {
+    const data = p.createdAt.slice(0, 10);
+    if (de && data < de) return false;
+    if (ate && data > ate) return false;
+    return true;
+  });
+}
+
+function render() {
+  const filtrando = document.getElementById('filtro-de').value || document.getElementById('filtro-ate').value;
+  const pedidos = pedidosNoPeriodo();
+
+  const countByStatus = (s) => pedidos.filter(p => p.status === s).length;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="num">${countByStatus('novo')}</div><div class="label">Novas solicitações</div></div>
+    <div class="stat"><div class="num">${countByStatus('orcamento_pronto')}</div><div class="label">Orçamentos aguardando repasse</div></div>
+    <div class="stat"><div class="num">${countByStatus('na_fila')}</div><div class="label">Na fila de produção</div></div>
+    <div class="stat"><div class="num">${countByStatus('imprimindo')}</div><div class="label">Imprimindo agora</div></div>
+    <div class="stat"><div class="num">${countByStatus('concluido')}</div><div class="label">Prontos para entrega</div></div>
+  `;
+
+  let alertsHtml = '';
+  if (alertasCache.orcamentosProntos.length) {
+    alertsHtml += `<div class="alert warn">🔔 ${alertasCache.orcamentosProntos.length} orçamento(s) pronto(s) para repassar ao cliente — ver aba Vendas.</div>`;
+  }
+  if (alertasCache.estoqueBaixo.length) {
+    alertsHtml += `<div class="alert danger">📦 Estoque baixo: ${escapeHtml(alertasCache.estoqueBaixo.map(f => f.material + ' ' + f.cor).join(', '))} — ver aba Estoque.</div>`;
+  }
+  if (!alertsHtml) alertsHtml = '<div class="alert ok">Tudo em dia, sem alertas no momento.</div>';
+  document.getElementById('alertas').innerHTML = alertsHtml;
+
+  document.getElementById('titulo-pedidos').textContent = filtrando ? `Pedidos no período (${pedidos.length})` : 'Últimos pedidos';
+  const listaTabela = filtrando ? pedidos : pedidos.slice(0, 15);
+  document.getElementById('tbody').innerHTML = listaTabela.map(p => `
+    <tr>
+      <td>#${p.id}</td>
+      <td>${escapeHtml(p.cliente)}</td>
+      <td>${descricaoPedido(p)}</td>
+      <td>${badge(p.status)}</td>
+      <td>${badge(p.statusPagamento)}</td>
+      <td class="muted">${fmtDate(p.createdAt)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="muted">Nenhum pedido no período.</td></tr>';
+}
+
+document.getElementById('filtro-de').addEventListener('change', render);
+document.getElementById('filtro-ate').addEventListener('change', render);
+document.getElementById('btn-limpar-filtro').addEventListener('click', () => {
+  document.getElementById('filtro-de').value = '';
+  document.getElementById('filtro-ate').value = '';
+  render();
+});
+
+async function load() {
+  const [pedidos, alertas] = await Promise.all([apiGet('/api/pedidos'), apiGet('/api/alertas')]);
+  pedidosCache = pedidos;
+  alertasCache = alertas;
+  render();
+}
+load();
+</script>
+</body>
+</html>

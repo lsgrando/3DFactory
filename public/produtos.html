@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Produtos — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Produtos</h1>
+  <p class="subtitle">Cadastre os produtos mais pedidos para reaproveitar na tela de Vendas. Clique num produto para editar.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <div class="row">
+      <button type="button" class="secondary" onclick="window.open('catalogo-imprimir.html', '_blank')">📄 Exportar catálogo PDF</button>
+      <button type="button" onclick="abrirNovoProduto()">+ Novo produto</button>
+    </div>
+  </div>
+
+  <div class="produtos-grid" id="grid"></div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:640px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" style="max-height:90vh;overflow:auto;" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('produtos.html');
+let produtosCache = [];
+let filamentosCache = [];
+let impressorasCache = [];
+let paramsCache = {};
+let imagemBase64Atual = null;
+let produtoIdAtual = null;
+let variacaoBlockSeq = 0;
+
+const CUSTO_FILAMENTO_PADRAO = 120; // R$/kg usado quando a variação não tem filamento sugerido
+const POTENCIA_PADRAO = 200; // W usado quando a variação não tem impressora sugerida
+const MARGENS_PREVIEW = [100, 150, 200, 250, 300];
+
+function calcularCustoVariacao(pesoGramas, tempoHoras, filamentoId, impressoraId) {
+  if (!pesoGramas || !tempoHoras) return null;
+  const filamento = filamentoId ? filamentosCache.find(f => f.id === Number(filamentoId)) : null;
+  const impressora = impressoraId ? impressorasCache.find(i => i.id === Number(impressoraId)) : null;
+  const precoPorKg = filamento ? filamento.precoPorKg : CUSTO_FILAMENTO_PADRAO;
+  const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
+  const tarifaKwh = paramsCache.tarifaKwh || 0;
+  const custoFilamento = (precoPorKg / 1000) * Number(pesoGramas);
+  const custoEnergia = ((potenciaW * Number(tempoHoras)) / 1000) * tarifaKwh;
+  return custoFilamento + custoEnergia;
+}
+
+function filamentoSugeridoOptions(selecionado) {
+  return '<option value="">—</option>' + filamentosCache.map(f =>
+    `<option value="${f.id}" ${f.id === selecionado ? 'selected' : ''}>${escapeHtml(f.material)} — ${escapeHtml(f.cor)}${f.marca ? ' (' + escapeHtml(f.marca) + ')' : ''}</option>`
+  ).join('');
+}
+function impressoraSugeridaOptions(selecionada) {
+  return '<option value="">—</option>' + impressorasCache.map(i =>
+    `<option value="${i.id}" ${i.id === selecionada ? 'selected' : ''}>${escapeHtml(i.nome)}</option>`
+  ).join('');
+}
+
+function variacoesSectionHtml() {
+  return `
+    <h3 style="margin:16px 0 8px">Variações (tamanhos/versões deste produto)</h3>
+    <p class="muted" style="margin:-4px 0 10px">Cada variação tem seu próprio peso, tempo de impressão e custo — é o que alimenta o cálculo de preço em Orçamento e no catálogo.</p>
+    <div id="variacoes-container"></div>
+    <button type="button" class="secondary small" id="btn-add-variacao">+ Adicionar variação</button>
+  `;
+}
+
+function atualizarPreviewBloco(block) {
+  const preview = block.querySelector('.preview-custo-bloco');
+  const peso = block.querySelector('[name="pesoGramas"]').value;
+  const tempo = block.querySelector('[name="tempoHoras"]').value;
+  const filamentoId = block.querySelector('[name="filamentoIdSugerido"]').value;
+  const impressoraId = block.querySelector('[name="impressoraIdSugerida"]').value;
+  const custo = calcularCustoVariacao(peso, tempo, filamentoId, impressoraId);
+  if (custo == null) { preview.innerHTML = ''; return; }
+  preview.innerHTML = `
+    <div class="price-box">
+      <div>Custo estimado: <b>${money(custo)}</b></div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:16px">
+        ${MARGENS_PREVIEW.map(m => {
+          const v = custo * (1 + m / 100);
+          return `<div><span class="muted">+${m}%</span><br><b>${money(v)}</b><br><a href="#" class="btn-usar-margem" data-valor="${v.toFixed(2)}" style="font-size:11px">usar como preço de venda</a></div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function addVariacaoBlock(valores) {
+  valores = valores || {};
+  const uid = ++variacaoBlockSeq;
+  const div = document.createElement('div');
+  div.className = 'item-block variacao-block';
+  div.dataset.uid = uid;
+  if (valores.id) div.dataset.variacaoId = valores.id;
+  div.innerHTML = `
+    <button type="button" class="danger btn-remove-item" title="Remover variação">✕</button>
+    <div class="field" style="min-width:110px"><label>Nome (P/M/G...)</label><input name="nome" value="${escapeAttr(valores.nome || '')}" placeholder="ex: Único, P, M, G" /></div>
+    <div class="field"><label>Peso (g)</label><input name="pesoGramas" type="number" step="0.01" value="${valores.pesoGramas != null ? valores.pesoGramas : ''}" /></div>
+    <div class="field"><label>Tempo (h)</label><input name="tempoHoras" type="number" step="0.01" value="${valores.tempoHoras != null ? valores.tempoHoras : ''}" /></div>
+    <div class="field"><label>Preço de venda (R$)</label><input name="precoVenda" type="number" step="0.01" value="${valores.precoVenda != null ? valores.precoVenda : ''}" placeholder="opcional" /></div>
+    <div class="field"><label>Filamento sugerido</label><select name="filamentoIdSugerido">${filamentoSugeridoOptions(valores.filamentoIdSugerido)}</select></div>
+    <div class="field"><label>Impressora sugerida</label><select name="impressoraIdSugerida">${impressoraSugeridaOptions(valores.impressoraIdSugerida)}</select></div>
+    <div class="field" style="min-width:100%"><label>Descrição / observação</label><input name="descricao" value="${escapeAttr(valores.descricao || '')}" /></div>
+    <div class="preview-custo-bloco" style="min-width:100%"></div>
+  `;
+  div.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-usar-margem');
+    if (!btn) return;
+    e.preventDefault();
+    div.querySelector('[name="precoVenda"]').value = btn.dataset.valor;
+  });
+  div.querySelector('.btn-remove-item').addEventListener('click', async () => {
+    const variacaoId = div.dataset.variacaoId;
+    if (variacaoId) {
+      if (!confirm('Remover esta variação?')) return;
+      await apiDelete(`/api/variacoes/${variacaoId}`);
+      toast('Variação removida.');
+    }
+    div.remove();
+    if (!document.querySelectorAll('.variacao-block').length) addVariacaoBlock({ nome: 'Único' });
+  });
+  ['pesoGramas', 'tempoHoras', 'filamentoIdSugerido', 'impressoraIdSugerida'].forEach((nome) => {
+    div.querySelector(`[name="${nome}"]`).addEventListener('input', () => atualizarPreviewBloco(div));
+  });
+  document.getElementById('variacoes-container').appendChild(div);
+  atualizarPreviewBloco(div);
+}
+
+function wireDropzoneImagem() {
+  const zone = document.getElementById('dropzone-imagem');
+  const input = document.getElementById('input-imagem');
+  const preview = document.getElementById('preview-imagem');
+  const texto = document.getElementById('dropzone-texto');
+
+  async function aplicarArquivo(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('Selecione um arquivo de imagem válido.', 'error');
+      return;
+    }
+    imagemBase64Atual = await fileToBase64(file);
+    preview.src = imagemBase64Atual;
+    preview.style.display = 'inline-block';
+    texto.style.display = 'none';
+  }
+
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => aplicarArquivo(e.target.files[0]));
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    aplicarArquivo(e.dataTransfer.files[0]);
+  });
+}
+
+function formProduto(titulo, valores, onSubmit) {
+  imagemBase64Atual = null;
+  produtoIdAtual = valores.id || null;
+  variacaoBlockSeq = 0;
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-produto-modal">
+      <div class="field" style="min-width:100%"><label>Nome do produto</label><input name="nome" value="${escapeAttr(valores.nome)}" required /></div>
+      <div class="field" style="min-width:100%"><label>Descrição</label><textarea name="descricao" placeholder="Detalhes do produto">${escapeHtml(valores.descricao || '')}</textarea></div>
+      <div class="field"><label>Dimensões padrão (mm)</label><input name="dimensoes" value="${escapeAttr(valores.dimensoes)}" placeholder="ex: 100x50x30" /></div>
+      <div class="field" style="min-width:100%"><label>Link do modelo (Makerworld etc.)</label><input name="modeloRef" value="${escapeAttr(valores.modeloRef)}" placeholder="https://..." /></div>
+      <div class="field" style="min-width:100%">
+        <label>Imagem</label>
+        <div id="dropzone-imagem" class="dropzone">
+          <img id="preview-imagem" class="thumb-lg" style="${valores.imagem ? '' : 'display:none'}" src="${escapeAttr(valores.imagem || '')}" />
+          <p class="muted" id="dropzone-texto" style="margin:0;${valores.imagem ? 'display:none' : ''}">Arraste uma imagem aqui ou <span class="dropzone-link">clique para escolher</span></p>
+          <input type="file" id="input-imagem" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+        </div>
+      </div>
+    </form>
+    ${variacoesSectionHtml()}
+    <div class="row" style="width:100%;margin-top:16px">
+      <button type="submit" form="form-produto-modal">Salvar</button>
+      <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+    </div>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  wireDropzoneImagem();
+  document.getElementById('btn-add-variacao').addEventListener('click', () => addVariacaoBlock({}));
+  if (produtoIdAtual) {
+    apiGet(`/api/variacoes?produtoId=${produtoIdAtual}`).then((vs) => {
+      if (vs.length) vs.forEach((v) => addVariacaoBlock(v));
+      else addVariacaoBlock({ nome: 'Único' });
+    });
+  } else {
+    addVariacaoBlock({ nome: 'Único' });
+  }
+  document.getElementById('form-produto-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    if (imagemBase64Atual) body.imagemBase64 = imagemBase64Atual;
+    const produto = await onSubmit(body);
+    for (const block of document.querySelectorAll('.variacao-block')) {
+      const nome = block.querySelector('[name="nome"]').value.trim();
+      const pesoGramas = block.querySelector('[name="pesoGramas"]').value;
+      const tempoHoras = block.querySelector('[name="tempoHoras"]').value;
+      const precoVenda = block.querySelector('[name="precoVenda"]').value;
+      const variacaoId = block.dataset.variacaoId;
+      if (!variacaoId && !nome && !pesoGramas && !tempoHoras && !precoVenda) continue;
+      const varBody = {
+        nome: nome || 'Único',
+        pesoGramas,
+        tempoHoras,
+        precoVenda,
+        filamentoIdSugerido: block.querySelector('[name="filamentoIdSugerido"]').value,
+        impressoraIdSugerida: block.querySelector('[name="impressoraIdSugerida"]').value,
+        descricao: block.querySelector('[name="descricao"]').value
+      };
+      if (variacaoId) await apiPatch(`/api/variacoes/${variacaoId}`, varBody);
+      else await apiPost('/api/variacoes', Object.assign({ produtoId: produto.id }, varBody));
+    }
+    toast('Produto salvo com sucesso!');
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovoProduto() {
+  formProduto('Novo produto', {}, async (body) => apiPost('/api/produtos', body));
+}
+window.abrirNovoProduto = abrirNovoProduto;
+
+function abrirEdicaoProduto(id) {
+  const p = produtosCache.find((x) => x.id === id);
+  if (!p) return;
+  formProduto(`Editar produto #${p.id}`, p, async (body) => apiPatch(`/api/produtos/${id}`, body));
+}
+window.abrirEdicaoProduto = abrirEdicaoProduto;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? produtosCache : produtosCache.filter((p) => p.nome.toLowerCase().includes(termo));
+  document.getElementById('grid').innerHTML = lista.length ? lista.map(p => `
+    <div class="produto-card clickable" onclick="abrirEdicaoProduto(${p.id})">
+      ${p.imagem ? `<img class="thumb-lg" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
+      <h4>${escapeHtml(p.nome)}</h4>
+      <div class="muted">${escapeHtml(p.dimensoes || '—')}</div>
+    </div>
+  `).join('') : '<p class="muted">Nenhum produto encontrado.</p>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  [filamentosCache, impressorasCache, produtosCache, paramsCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/produtos'), apiGet('/api/params')
+  ]);
+  render();
+}
+load();
+</script>
+</body>
+</html>

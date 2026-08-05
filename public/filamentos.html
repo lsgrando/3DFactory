@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Filamentos — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Estoque de filamento</h1>
+  <p class="subtitle">Baixa automática por gramatura a cada peça produzida. Cadastre cores/materiais e registre compras aqui.</p>
+
+  <div id="alerta-estoque"></div>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por material ou cor..." /></div>
+    <div class="row">
+      <a href="catalogo-cores.html" class="secondary" style="display:inline-flex;align-items:center;padding:9px 16px;border-radius:6px;border:1px solid var(--primary);color:var(--primary);text-decoration:none;font-size:14px;font-weight:600">Gerenciar catálogo de cores</a>
+      <button type="button" onclick="abrirNovoFilamento()">+ Novo filamento</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Material</th><th>Marca</th><th>Cor</th><th>R$/kg</th><th>Estoque atual</th><th>Mínimo</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:460px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('filamentos.html');
+let filamentosCache = [];
+let catalogoCoresCache = [];
+
+function marcasUnicas() {
+  return [...new Set(catalogoCoresCache.map((c) => c.marca).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+function materiaisDaMarca(marca) {
+  return [...new Set(catalogoCoresCache.filter((c) => c.marca === marca).map((c) => c.material))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+function coresDoMaterialMarca(marca, material) {
+  return catalogoCoresCache.filter((c) => c.marca === marca && c.material === material).sort((a, b) => a.cor.localeCompare(b.cor, 'pt-BR'));
+}
+
+function formFilamento(titulo, valores, onSubmit) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-filamento-modal">
+      <div class="field"><label>Marca</label>
+        <div class="search-select" id="ss-marca">
+          <input type="hidden" id="sel-marca" />
+          <input class="search-select-input" placeholder="Buscar marca..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+        <input id="input-marca-manual" placeholder="Nome da marca" style="display:none;margin-top:6px" />
+      </div>
+      <div class="field"><label>Material</label>
+        <div class="search-select" id="ss-material">
+          <input type="hidden" id="sel-material" />
+          <input class="search-select-input" placeholder="Buscar material..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+        <input id="input-material-manual" placeholder="PLA, PETG..." style="display:none;margin-top:6px" />
+      </div>
+      <div class="field"><label>Cor</label>
+        <div class="search-select" id="ss-cor">
+          <input type="hidden" id="sel-cor" />
+          <input class="search-select-input" placeholder="Buscar cor..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+        <input id="input-cor-manual" placeholder="Nome da cor" style="display:none;margin-top:6px" />
+      </div>
+      <div class="field"><label>Cor aproximada</label><input name="corHex" type="color" value="${valores.corHex || '#cccccc'}" style="height:38px;padding:2px" /></div>
+      <div class="field"><label>Preço por kg (R$)</label><input name="precoPorKg" type="number" step="0.01" value="${valores.precoPorKg || ''}" required /></div>
+      <div class="field"><label>Peso do rolo (g)</label><input name="pesoRoloGramas" type="number" value="${valores.pesoRoloGramas || 1000}" /></div>
+      ${valores.id ? '' : '<div class="field"><label>Estoque inicial (g)</label><input name="estoqueAtualGramas" type="number" value="0" /></div>'}
+      <div class="field"><label>Estoque mínimo (g)</label><input name="estoqueMinimoGramas" type="number" value="${valores.estoqueMinimoGramas || 200}" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  wireSeletorCatalogo(valores);
+  document.getElementById('form-filamento-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    body.marca = document.getElementById('sel-marca').value || document.getElementById('input-marca-manual').value;
+    body.material = document.getElementById('sel-material').value || document.getElementById('input-material-manual').value;
+    body.cor = document.getElementById('sel-cor').value || document.getElementById('input-cor-manual').value;
+    await onSubmit(body);
+    closeModal();
+    load();
+  });
+}
+
+function wireSeletorCatalogo(valores) {
+  const inputMarca = document.getElementById('input-marca-manual');
+  const inputMaterial = document.getElementById('input-material-manual');
+  const inputCor = document.getElementById('input-cor-manual');
+  const inputCorHex = document.querySelector('#form-filamento-modal [name="corHex"]');
+
+  function itensMarca() {
+    return marcasUnicas().map((m) => ({ value: m, label: m }));
+  }
+  function itensMaterial(marca) {
+    return (marca ? materiaisDaMarca(marca) : []).map((m) => ({ value: m, label: m }));
+  }
+  function itensCor(marca, material) {
+    return (marca && material ? coresDoMaterialMarca(marca, material) : []).map((c) => ({ value: c.cor, label: c.cor, hex: c.corHex }));
+  }
+
+  function renderCor(marca, material, corSelecionada) {
+    const wrap = document.getElementById('ss-cor');
+    wrap.innerHTML = '<input type="hidden" id="sel-cor" /><input class="search-select-input" placeholder="Buscar cor..." autocomplete="off" /><div class="search-select-list"></div>';
+    const itens = itensCor(marca, material);
+    wireSearchSelect(wrap, itens, (val) => {
+      document.getElementById('sel-cor').value = val;
+      inputCor.style.display = val ? 'none' : '';
+      const it = itens.find((x) => x.value === val);
+      if (val && it && it.hex) inputCorHex.value = it.hex;
+    }, corSelecionada, '— Outra cor (digitar) —');
+  }
+  function renderMaterial(marca, materialSelecionado, corSelecionada) {
+    const wrap = document.getElementById('ss-material');
+    wrap.innerHTML = '<input type="hidden" id="sel-material" /><input class="search-select-input" placeholder="Buscar material..." autocomplete="off" /><div class="search-select-list"></div>';
+    wireSearchSelect(wrap, itensMaterial(marca), (val) => {
+      document.getElementById('sel-material').value = val;
+      inputMaterial.style.display = val ? 'none' : '';
+      renderCor(marca, val, val ? (corSelecionada || '') : '');
+      if (!val) { inputCor.style.display = ''; inputCor.value = corSelecionada || ''; }
+    }, materialSelecionado, '— Outro material (digitar) —');
+  }
+
+  const wrapMarca = document.getElementById('ss-marca');
+  const marcaBate = valores.marca && marcasUnicas().includes(valores.marca);
+  const materialBate = marcaBate && valores.material && materiaisDaMarca(valores.marca).includes(valores.material);
+  const corBate = materialBate && valores.cor && coresDoMaterialMarca(valores.marca, valores.material).some((c) => c.cor === valores.cor);
+
+  wireSearchSelect(wrapMarca, itensMarca(), (val) => {
+    document.getElementById('sel-marca').value = val;
+    inputMarca.style.display = val ? 'none' : '';
+    renderMaterial(val, '', '');
+    if (!val) { inputMaterial.style.display = ''; inputMaterial.value = ''; renderCor('', '', ''); inputCor.style.display = ''; inputCor.value = ''; }
+  }, marcaBate ? valores.marca : '', '— Outra marca (digitar) —');
+
+  // estado inicial: reconstrói a cascata completa preservando material/cor pré-selecionados
+  // (o onSelect acima já rodou uma vez e zerou os filhos — este bloco refaz com os valores certos)
+  if (!marcaBate) {
+    inputMarca.style.display = '';
+    inputMarca.value = valores.marca || '';
+  }
+  renderMaterial(marcaBate ? valores.marca : '', materialBate ? valores.material : '', valores.cor || '');
+  if (!materialBate) {
+    inputMaterial.style.display = '';
+    inputMaterial.value = valores.material || '';
+  }
+  if (!corBate) {
+    inputCor.style.display = '';
+    inputCor.value = valores.cor || '';
+  }
+}
+
+async function abrirNovoFilamento() {
+  await dadosPromise;
+  formFilamento('Novo filamento', {}, async (body) => {
+    await apiPost('/api/filamentos', body);
+    toast('Filamento cadastrado com sucesso!');
+  });
+}
+window.abrirNovoFilamento = abrirNovoFilamento;
+
+async function abrirEdicaoFilamento(id) {
+  await dadosPromise;
+  const f = filamentosCache.find((x) => x.id === id);
+  if (!f) return;
+  formFilamento('Editar filamento', f, async (body) => {
+    await apiPatch(`/api/filamentos/${id}`, body);
+    toast('Filamento atualizado com sucesso!');
+  });
+}
+window.abrirEdicaoFilamento = abrirEdicaoFilamento;
+
+function abrirEntrada(id) {
+  const f = filamentosCache.find((x) => x.id === id);
+  const nome = f ? `${f.material} ${f.cor}` : '';
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Registrar compra — ${escapeHtml(nome)}</h2>
+    <form class="inline" id="form-entrada">
+      <div class="field" style="min-width:100%"><label>Quantidade comprada (g)</label><input name="gramas" type="number" required /></div>
+      <div class="field" style="min-width:100%"><label>Novo preço por kg (opcional)</label><input name="novoPrecoPorKg" type="number" step="0.01" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar entrada</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-entrada').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    await apiPatch(`/api/filamentos/${id}/entrada`, body);
+    toast('Entrada de estoque registrada!');
+    closeModal();
+    load();
+  });
+}
+window.abrirEntrada = abrirEntrada;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? filamentosCache : filamentosCache.filter((f) =>
+    f.material.toLowerCase().includes(termo) || f.cor.toLowerCase().includes(termo) || (f.marca || '').toLowerCase().includes(termo)
+  );
+
+  const baixos = filamentosCache.filter((f) => f.estoqueAtualGramas <= f.estoqueMinimoGramas);
+  document.getElementById('alerta-estoque').innerHTML = baixos.length
+    ? `<div class="alert danger">📦 ${baixos.length} filamento(s) abaixo do estoque mínimo: ${escapeHtml(baixos.map((f) => f.material + ' ' + f.cor).join(', '))}</div>`
+    : '<div class="alert ok">Estoque de filamentos dentro do esperado.</div>';
+
+  document.getElementById('tbody').innerHTML = lista.map((f) => `
+    <tr class="clickable" onclick="abrirEdicaoFilamento(${f.id})">
+      <td>${escapeHtml(f.material)}</td><td>${escapeHtml(f.marca || '—')}</td>
+      <td><span class="color-swatch" style="${f.corHex ? `background:${escapeAttr(f.corHex)}` : ''}" title="${escapeAttr(f.corHex || 'sem cor definida')}"></span>${escapeHtml(f.cor)}</td>
+      <td>${money(f.precoPorKg)}</td>
+      <td style="${f.estoqueAtualGramas <= f.estoqueMinimoGramas ? 'color:#b23b3b;font-weight:700' : ''}">${f.estoqueAtualGramas}g</td>
+      <td class="muted">${f.estoqueMinimoGramas}g</td>
+      <td><button class="small secondary" onclick="event.stopPropagation(); abrirEntrada(${f.id})">Registrar compra</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="muted">Nenhum filamento cadastrado.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+let dadosPromise = null;
+function load() {
+  dadosPromise = Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/catalogo-cores')
+  ]).then(([f, c]) => {
+    filamentosCache = f;
+    catalogoCoresCache = c;
+    render();
+  });
+  return dadosPromise;
+}
+load();
+</script>
+</body>
+</html>

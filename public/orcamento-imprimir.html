@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Orçamento — Ateliê 3D Home</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  body { background: #ece7e2; }
+  .print-toolbar {
+    max-width: 780px;
+    margin: 18px auto 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .print-sheet {
+    max-width: 780px;
+    margin: 16px auto 48px;
+    background: #fff;
+    padding: 48px 56px;
+    box-shadow: 0 2px 18px rgba(0,0,0,.12);
+    font-size: 14px;
+    color: #2b2320;
+    border-radius: 4px;
+  }
+  .doc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    border-bottom: 2px solid #c9a27a;
+    padding-bottom: 18px;
+    margin-bottom: 26px;
+  }
+  .doc-header img { height: 92px; width: auto; }
+  .doc-header .meta { text-align: right; }
+  .doc-header .meta h1 { margin: 0; font-size: 22px; color: #6b4a36; letter-spacing: .02em; }
+  .doc-header .meta .num { font-size: 13px; color: #8a7a6c; margin-top: 4px; }
+  .doc-block { margin-bottom: 24px; }
+  .doc-block h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: #8a7a6c;
+    margin: 0 0 8px;
+    font-weight: 700;
+  }
+  .doc-block p { margin: 2px 0; }
+  table.doc-itens { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  table.doc-itens th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: #8a7a6c;
+    border-bottom: 2px solid #e6d9cd;
+    padding: 8px 6px;
+  }
+  table.doc-itens td { padding: 10px 6px; border-bottom: 1px solid #f0e6dc; vertical-align: top; }
+  table.doc-itens td.valor, table.doc-itens th.valor { text-align: right; white-space: nowrap; }
+  .doc-total { display: flex; justify-content: flex-end; margin-top: 12px; }
+  .doc-total .box { text-align: right; }
+  .doc-total .label { font-size: 12px; color: #8a7a6c; }
+  .doc-total .valor { font-size: 26px; font-weight: 700; color: #6b4a36; }
+  .doc-validade { margin-top: 10px; font-size: 13px; color: #8a7a6c; }
+  .doc-footer {
+    margin-top: 44px;
+    padding-top: 16px;
+    border-top: 1px solid #e6d9cd;
+    font-size: 12px;
+    color: #8a7a6c;
+    text-align: center;
+  }
+  .doc-footer a { color: #8a7a6c; }
+  .doc-erro { padding: 40px; text-align: center; color: var(--muted); }
+  @media print {
+    .no-print { display: none !important; }
+    body { background: #fff; }
+    .print-sheet { box-shadow: none !important; margin: 0 !important; border-radius: 0; max-width: none; padding: 0; }
+    @page { margin: 18mm; }
+  }
+</style>
+</head>
+<body>
+
+<div class="print-toolbar no-print">
+  <button type="button" onclick="window.print()">🖨️ Imprimir / Salvar como PDF</button>
+  <button type="button" class="secondary" onclick="window.close()">Fechar</button>
+</div>
+
+<div class="print-sheet" id="sheet"><p class="muted">Carregando orçamento...</p></div>
+
+<script src="app.js"></script>
+<script>
+function qs(name) {
+  return new URLSearchParams(window.location.search).get(name);
+}
+function fmtDataCurta(iso) {
+  const [y, m, d] = String(iso).slice(0, 10).split('-');
+  return (y && m && d) ? `${d}/${m}/${y}` : String(iso);
+}
+
+async function load() {
+  const id = qs('id');
+  const sheet = document.getElementById('sheet');
+  if (!id) { sheet.innerHTML = '<p class="doc-erro">Pedido não informado.</p>'; return; }
+
+  let pedido;
+  try {
+    pedido = await apiGet(`/api/pedidos/${id}`);
+  } catch (e) {
+    sheet.innerHTML = '<p class="doc-erro">Não foi possível carregar este pedido.</p>';
+    return;
+  }
+
+  const orcados = pedido.itens.filter((it) => it.orcamento);
+  if (!orcados.length) {
+    sheet.innerHTML = '<p class="doc-erro">Este pedido ainda não tem itens orçados.</p>';
+    return;
+  }
+
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda, 0);
+  const validades = orcados.map((it) => it.orcamento.validadeOrcamento).filter(Boolean).sort();
+  const validade = validades[0] || null;
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  document.title = `Orçamento #${pedido.id} — ${pedido.cliente || 'Ateliê 3D Home'}`;
+
+  sheet.innerHTML = `
+    <div class="doc-header">
+      <img src="assets/logo-atelie.jpeg" alt="Ateliê 3D Home" />
+      <div class="meta">
+        <h1>Orçamento</h1>
+        <div class="num">Nº ${pedido.id} &middot; ${hoje}</div>
+      </div>
+    </div>
+
+    <div class="doc-block">
+      <h2>Cliente</h2>
+      <p><b>${escapeHtml(pedido.cliente || '—')}</b></p>
+      ${pedido.contato ? `<p>${escapeHtml(pedido.contato)}</p>` : ''}
+    </div>
+
+    <div class="doc-block">
+      <h2>Itens orçados</h2>
+      <table class="doc-itens">
+        <thead><tr><th>Descrição</th><th>Qtd</th><th>Variação</th><th class="valor">Valor</th></tr></thead>
+        <tbody>
+          ${orcados.map((it) => `
+            <tr>
+              <td>${escapeHtml(it.descricao)}</td>
+              <td>${it.quantidade}</td>
+              <td>${escapeHtml(it.variacao || '—')}</td>
+              <td class="valor">${money(it.orcamento.precoVenda)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <div class="doc-total">
+        <div class="box">
+          <div class="label">Total do orçamento</div>
+          <div class="valor">${money(total)}</div>
+        </div>
+      </div>
+      ${validade ? `<div class="doc-validade">Orçamento válido até <b>${fmtDataCurta(validade)}</b>.</div>` : ''}
+    </div>
+
+    ${pedido.observacoes ? `
+    <div class="doc-block">
+      <h2>Observações</h2>
+      <p>${escapeHtml(pedido.observacoes)}</p>
+    </div>` : ''}
+
+    <div class="doc-block">
+      <h2>Formas de pagamento aceitas</h2>
+      <p>${FORMA_PAGAMENTO.join(' · ')}</p>
+    </div>
+
+    <div class="doc-footer">
+      Ateliê 3D Home &nbsp;·&nbsp;
+      Instagram: <a href="https://www.instagram.com/atelie3d.home/" target="_blank" rel="noopener">@atelie3d.home</a> &nbsp;·&nbsp;
+      E-mail: lsgrando@gmail.com
+    </div>
+  `;
+}
+load();
+</script>
+</body>
+</html>

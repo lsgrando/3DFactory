@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Financeiro — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Financeiro</h1>
+  <p class="subtitle">Saldo das contas, lançamentos manuais e relatório de movimentação de caixa.</p>
+
+  <div class="grid" id="saldos"></div>
+
+  <h2>Nova movimentação</h2>
+  <div class="card">
+    <form class="inline" id="form-mov">
+      <div class="field">
+        <label>Tipo</label>
+        <select name="tipo" id="mov-tipo">
+          <option value="saida">Saída (despesa)</option>
+          <option value="entrada">Entrada</option>
+        </select>
+      </div>
+      <div class="field"><label>Forma de pagamento</label><select name="formaPagamento" id="mov-forma"></select></div>
+      <div class="field"><label>Categoria</label><select name="categoria" id="mov-categoria"></select></div>
+      <div class="field" id="mov-categoria-outro-field" style="display:none"><label>Descreva a categoria</label><input name="categoriaOutro" /></div>
+      <div class="field" id="mov-responsavel-field"><label>Pago por</label>
+        <select id="mov-responsavel"><option value="">Caixa da empresa</option></select>
+      </div>
+      <div class="field" id="mov-conta-field"><label>Conta</label><select id="mov-conta"></select></div>
+      <div class="field"><label>Valor (R$)</label><input name="valor" type="number" step="0.01" min="0.01" required /></div>
+      <div class="field"><label>Data</label><input name="data" type="date" /></div>
+      <div class="field" style="min-width:100%"><label>Descrição</label><input name="descricao" placeholder="Detalhes do lançamento" /></div>
+      <button type="submit">Lançar</button>
+    </form>
+  </div>
+
+  <h2>Sócios — a receber da empresa</h2>
+  <div class="card" id="socios-a-receber"></div>
+
+  <h2>Relatório de movimentação de caixa</h2>
+  <div class="card">
+    <form class="inline" id="form-filtro">
+      <div class="field"><label>Conta</label><select name="contaId" id="filtro-conta"><option value="">Todas</option></select></div>
+      <div class="field"><label>Tipo</label><select name="tipo" id="filtro-tipo"><option value="">Todos</option><option value="entrada">Entrada</option><option value="saida">Saída</option></select></div>
+      <div class="field"><label>Categoria</label><select name="categoria" id="filtro-categoria"><option value="">Todas</option></select></div>
+      <div class="field"><label>Sócio</label><select name="socioId" id="filtro-socio"><option value="">Todos</option></select></div>
+      <div class="field"><label>De</label><input name="de" type="date" /></div>
+      <div class="field"><label>Até</label><input name="ate" type="date" /></div>
+      <div class="row">
+        <button type="submit">Filtrar</button>
+        <button type="button" class="secondary" id="btn-limpar-filtro">Limpar</button>
+      </div>
+    </form>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Data</th><th>Tipo</th><th>Categoria</th><th>Forma</th><th>Conta</th><th>Responsável</th><th>Descrição</th><th>Valor</th><th></th></tr></thead>
+      <tbody id="tbody-relatorio"></tbody>
+    </table>
+    <div id="totais-relatorio" style="margin-top:12px;font-size:14px"></div>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:420px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" style="max-height:90vh;overflow:auto;" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('financeiro.html');
+
+let contasCache = [];
+let sociosCache = [];
+let movimentacoesCache = [];
+let relatorioCache = [];
+
+function categoriaOptions(tipo) {
+  const list = tipo === 'saida' ? CATEGORIAS_SAIDA : CATEGORIAS_ENTRADA;
+  return list.map(c => `<option value="${c}">${c}</option>`).join('');
+}
+
+function atualizarFormTipo() {
+  const tipo = document.getElementById('mov-tipo').value;
+  document.getElementById('mov-categoria').innerHTML = categoriaOptions(tipo);
+  document.getElementById('mov-categoria-outro-field').style.display = 'none';
+  document.getElementById('mov-responsavel-field').style.display = tipo === 'saida' ? '' : 'none';
+  document.getElementById('mov-responsavel').value = '';
+  document.getElementById('mov-conta-field').style.display = '';
+}
+document.getElementById('mov-tipo').addEventListener('change', atualizarFormTipo);
+
+document.getElementById('mov-categoria').addEventListener('change', (e) => {
+  document.getElementById('mov-categoria-outro-field').style.display = e.target.value === 'Outro' ? '' : 'none';
+});
+
+document.getElementById('mov-responsavel').addEventListener('change', (e) => {
+  document.getElementById('mov-conta-field').style.display = e.target.value ? 'none' : '';
+});
+
+document.getElementById('form-mov').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const tipo = form.tipo.value;
+  const responsavelId = document.getElementById('mov-responsavel').value;
+  const body = {
+    tipo,
+    formaPagamento: document.getElementById('mov-forma').value,
+    categoria: document.getElementById('mov-categoria').value,
+    valor: form.valor.value,
+    descricao: form.descricao.value,
+    data: form.data.value || undefined
+  };
+  if (body.categoria === 'Outro') body.categoriaDetalhe = form.categoriaOutro.value;
+  if (tipo === 'saida' && responsavelId) {
+    body.responsavelId = responsavelId;
+  } else {
+    body.contaId = document.getElementById('mov-conta').value;
+  }
+  await apiPost('/api/movimentacoes-financeiras', body);
+  toast('Movimentação lançada com sucesso!');
+  form.reset();
+  atualizarFormTipo();
+  await load();
+});
+
+async function estornar(id) {
+  if (!confirm('Estornar esta movimentação? Isso cria um lançamento inverso e ajusta o saldo da conta.')) return;
+  await apiPost(`/api/movimentacoes-financeiras/${id}/estorno`, {});
+  toast('Movimentação estornada!');
+  load();
+}
+window.estornar = estornar;
+
+function abrirReembolso(socioId) {
+  const socio = sociosCache.find(s => s.id === socioId);
+  const pendencias = movimentacoesCache.filter(m =>
+    m.responsavelId === socioId && m.contaId === null && m.tipo === 'saida' && !m.reembolsado && !m.estornado
+  );
+  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Reembolsar ${escapeHtml(socio.nome)}</h2>
+    <form id="form-reembolso">
+      <div style="margin-bottom:10px">
+        ${pendencias.map(m => `
+          <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:14px">
+            <input type="checkbox" class="chk-pendencia" value="${m.id}" checked />
+            ${fmtDate(m.data)} — ${escapeHtml(m.descricao || m.categoria)} — <b>${money(m.valor)}</b>
+          </label>
+        `).join('')}
+      </div>
+      <div class="field" style="margin-bottom:10px"><label>Conta que vai pagar</label><select name="contaId">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Descrição (opcional)</label><input name="descricao" placeholder="Reembolso a ${escapeAttr(socio.nome)}" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Confirmar reembolso</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-reembolso').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const movimentacaoIds = [...document.querySelectorAll('.chk-pendencia:checked')].map(el => el.value);
+    if (!movimentacaoIds.length) { toast('Selecione ao menos uma pendência', 'error'); return; }
+    await apiPost(`/api/socios/${socioId}/reembolso`, {
+      contaId: form.contaId.value,
+      formaPagamento: form.formaPagamento.value,
+      descricao: form.descricao.value,
+      movimentacaoIds
+    });
+    toast('Reembolso registrado!');
+    closeModal();
+    load();
+  });
+}
+window.abrirReembolso = abrirReembolso;
+
+function renderSaldos() {
+  document.getElementById('saldos').innerHTML = contasCache.map(c => `
+    <div class="stat"><div class="num">${money(c.saldoAtual)}</div><div class="label">${escapeHtml(c.nome)}</div></div>
+  `).join('');
+}
+
+function renderSociosAReceber() {
+  const linhas = sociosCache.map(s => {
+    const pendencias = movimentacoesCache.filter(m =>
+      m.responsavelId === s.id && m.contaId === null && m.tipo === 'saida' && !m.reembolsado && !m.estornado
+    );
+    const total = pendencias.reduce((sum, m) => sum + m.valor, 0);
+    return { socio: s, total, qtd: pendencias.length };
+  });
+  document.getElementById('socios-a-receber').innerHTML = linhas.map(l => `
+    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div><b>${escapeHtml(l.socio.nome)}</b> <span class="muted">${l.qtd} pendência(s)</span></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <b>${money(l.total)}</b>
+        ${l.total > 0 ? `<button class="small secondary" onclick="abrirReembolso(${l.socio.id})">Reembolsar</button>` : ''}
+      </div>
+    </div>
+  `).join('') || '<p class="muted">Nenhum sócio cadastrado.</p>';
+}
+
+function linhaRelatorio(m) {
+  const contaNome = m.contaId ? (contasCache.find(c => c.id === m.contaId) || {}).nome : '—';
+  const socioNome = m.responsavelId ? (sociosCache.find(s => s.id === m.responsavelId) || {}).nome : '—';
+  const categoria = m.categoria === 'Outro' && m.categoriaDetalhe ? m.categoriaDetalhe : m.categoria;
+  let acao = '—';
+  if (m.estornado) acao = '<span class="muted">Estornada</span>';
+  else if (m.estornoDe) acao = '<span class="muted">Estorno</span>';
+  else acao = `<button class="small danger" onclick="estornar(${m.id})">Estornar</button>`;
+  return `<tr>
+    <td class="muted">${fmtDate(m.data)}</td>
+    <td>${badge(m.tipo, m.tipo === 'entrada' ? 'Entrada' : 'Saída')}</td>
+    <td class="col-wrap">${escapeHtml(categoria)}</td>
+    <td>${escapeHtml(m.formaPagamento)}</td>
+    <td>${escapeHtml(contaNome)}</td>
+    <td>${escapeHtml(socioNome)}</td>
+    <td class="col-wrap">${escapeHtml(m.descricao || '—')}</td>
+    <td>${money(m.valor)}</td>
+    <td>${acao}</td>
+  </tr>`;
+}
+
+function renderRelatorio() {
+  document.getElementById('tbody-relatorio').innerHTML = relatorioCache.map(linhaRelatorio).join('') ||
+    '<tr><td colspan="9" class="muted">Nenhuma movimentação encontrada.</td></tr>';
+  const totalEntradas = relatorioCache.filter(m => m.tipo === 'entrada').reduce((s, m) => s + m.valor, 0);
+  const totalSaidas = relatorioCache.filter(m => m.tipo === 'saida').reduce((s, m) => s + m.valor, 0);
+  document.getElementById('totais-relatorio').innerHTML =
+    `Entradas: <b>${money(totalEntradas)}</b> &nbsp;·&nbsp; Saídas: <b>${money(totalSaidas)}</b> &nbsp;·&nbsp; Saldo do período: <b>${money(totalEntradas - totalSaidas)}</b>`;
+}
+
+function aplicarFiltro() {
+  const form = document.getElementById('form-filtro');
+  let list = movimentacoesCache;
+  if (form.contaId.value) list = list.filter(m => m.contaId === Number(form.contaId.value));
+  if (form.tipo.value) list = list.filter(m => m.tipo === form.tipo.value);
+  if (form.categoria.value) list = list.filter(m => m.categoria === form.categoria.value);
+  if (form.socioId.value) list = list.filter(m => m.responsavelId === Number(form.socioId.value));
+  if (form.de.value) list = list.filter(m => m.data >= form.de.value);
+  if (form.ate.value) list = list.filter(m => m.data <= form.ate.value + 'T23:59:59.999Z');
+  relatorioCache = list;
+  renderRelatorio();
+}
+document.getElementById('form-filtro').addEventListener('submit', (e) => { e.preventDefault(); aplicarFiltro(); });
+document.getElementById('btn-limpar-filtro').addEventListener('click', () => {
+  document.getElementById('form-filtro').reset();
+  aplicarFiltro();
+});
+
+async function load() {
+  [contasCache, sociosCache, movimentacoesCache] = await Promise.all([
+    apiGet('/api/contas-financeiras'), apiGet('/api/socios'), apiGet('/api/movimentacoes-financeiras')
+  ]);
+
+  document.getElementById('mov-forma').innerHTML = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+  document.getElementById('mov-conta').innerHTML = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  document.getElementById('mov-responsavel').innerHTML = '<option value="">Caixa da empresa</option>' + sociosCache.map(s => `<option value="${s.id}">${escapeHtml(s.nome)}</option>`).join('');
+  atualizarFormTipo();
+
+  document.getElementById('filtro-conta').innerHTML = '<option value="">Todas</option>' + contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  document.getElementById('filtro-socio').innerHTML = '<option value="">Todos</option>' + sociosCache.map(s => `<option value="${s.id}">${escapeHtml(s.nome)}</option>`).join('');
+  const categoriasVistas = [...new Set(movimentacoesCache.map(m => m.categoria))].sort();
+  document.getElementById('filtro-categoria').innerHTML = '<option value="">Todas</option>' + categoriasVistas.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join('');
+
+  renderSaldos();
+  renderSociosAReceber();
+  aplicarFiltro();
+}
+load();
+</script>
+</body>
+</html>

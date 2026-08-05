@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Catálogo de Cores — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Catálogo de Cores</h1>
+  <p class="subtitle">Referência de material, marca e cor disponíveis — não é estoque. Use isso pra preencher rápido ao cadastrar um filamento que entrou de verdade no estoque.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por marca, material ou cor..." /></div>
+    <button type="button" onclick="abrirNovaCor()">+ Nova cor de catálogo</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Marca</th><th>Material</th><th>Cor</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:380px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('catalogo-cores.html');
+let catalogoCoresCache = [];
+
+function formCor(titulo, valores, onSubmit) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-cor-modal">
+      <div class="field" style="min-width:100%"><label>Marca</label><input name="marca" value="${escapeAttr(valores.marca || '')}" placeholder="ex: Voolt3D, Bambu Lab..." /></div>
+      <div class="field" style="min-width:100%"><label>Material</label><input name="material" value="${escapeAttr(valores.material || '')}" placeholder="PLA, PETG..." required /></div>
+      <div class="field" style="min-width:100%"><label>Cor</label><input name="cor" value="${escapeAttr(valores.cor || '')}" required /></div>
+      <div class="field"><label>Cor aproximada</label><input name="corHex" type="color" value="${valores.corHex || '#cccccc'}" style="height:38px;padding:2px" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-cor-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await onSubmit(Object.fromEntries(fd.entries()));
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovaCor() {
+  formCor('Nova cor de catálogo', {}, async (body) => {
+    await apiPost('/api/catalogo-cores', body);
+    toast('Cor cadastrada no catálogo!');
+  });
+}
+window.abrirNovaCor = abrirNovaCor;
+
+function abrirEdicaoCor(id) {
+  const c = catalogoCoresCache.find((x) => x.id === id);
+  if (!c) return;
+  formCor('Editar cor de catálogo', c, async (body) => {
+    await apiPatch(`/api/catalogo-cores/${id}`, body);
+    toast('Cor atualizada com sucesso!');
+  });
+}
+window.abrirEdicaoCor = abrirEdicaoCor;
+
+async function removerCor(id) {
+  const c = catalogoCoresCache.find((x) => x.id === id);
+  const nome = c ? `${c.marca ? c.marca + ' - ' : ''}${c.material} ${c.cor}` : '';
+  if (!confirm(`Remover "${nome}" do catálogo? Essa ação não pode ser desfeita.`)) return;
+  await apiDelete(`/api/catalogo-cores/${id}`);
+  toast('Cor removida do catálogo.');
+  load();
+}
+window.removerCor = removerCor;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? catalogoCoresCache : catalogoCoresCache.filter((c) =>
+    (c.marca || '').toLowerCase().includes(termo) || c.material.toLowerCase().includes(termo) || c.cor.toLowerCase().includes(termo)
+  );
+  document.getElementById('tbody').innerHTML = lista.map((c) => `
+    <tr class="clickable" onclick="abrirEdicaoCor(${c.id})">
+      <td>${escapeHtml(c.marca || '—')}</td>
+      <td>${escapeHtml(c.material)}</td>
+      <td><span class="color-swatch" style="${c.corHex ? `background:${escapeAttr(c.corHex)}` : ''}" title="${escapeAttr(c.corHex || 'sem cor definida')}"></span>${escapeHtml(c.cor)}</td>
+      <td><button class="small danger" onclick="event.stopPropagation(); removerCor(${c.id})">Remover</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="muted">Nenhuma cor cadastrada no catálogo.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  catalogoCoresCache = await apiGet('/api/catalogo-cores');
+  render();
+}
+load();
+</script>
+</body>
+</html>
