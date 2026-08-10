@@ -2,7 +2,6 @@ node_modules/
 
 # Banco de dados e uploads — dados reais da empresa, nunca versionar
 data/
-public/uploads/
 
 .idea/
 .claude/settings.local.json
