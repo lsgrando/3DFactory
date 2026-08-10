@@ -44,7 +44,6 @@ renderNav('vendas.html');
 let filamentosCache = [];
 let produtosCache = [];
 let clientesCache = [];
-let contasCache = [];
 let impressorasCache = [];
 let variacoesCache = [];
 let usuariosCache = [];
@@ -77,6 +76,13 @@ function filamentoItens() {
 }
 function impressoraItens() {
   return impressorasCache.map(i => ({ value: i.id, label: `${i.nome} (${i.potenciaW}W)` }));
+}
+// Impressora padrão pra um item novo (ainda sem orçamento salvo) — a maioria do parque é A1,
+// então já vem uma pré-selecionada em vez de forçar escolher toda vez; o vendedor troca se for
+// usar outro modelo.
+function impressoraPadraoA1() {
+  const a1 = impressorasCache.find(i => /a1/i.test(i.nome));
+  return a1 ? a1.id : '';
 }
 function clienteItens() {
   return clientesCache.map(c => ({ value: c.id, label: c.nome }));
@@ -114,15 +120,19 @@ function mostrarInfoProduto(div, produtoId) {
 }
 
 // Único ponto que aplica uma variação cadastrada: preenche o texto da variação e,
-// se o item já tiver a seção de orçamento montada (div._filCtrl/_impCtrl), também
+// se o item já tiver a seção de orçamento montada (div._filRows/_impCtrl), também
 // pré-preenche peso/tempo/filamento/impressora — evita perguntar a mesma coisa 2x.
+// A variação do catálogo é single-filamento — preenche só a primeira linha; o vendedor
+// adiciona linhas extras manualmente se a peça real usa mais de um filamento.
 function aplicarVariacaoNoItem(div, variacaoId) {
   const v = variacoesCache.find(x => x.id === Number(variacaoId));
   if (!v) return;
   div.querySelector('[name="variacao"]').value = v.nome;
-  if (v.pesoGramas) { const el = div.querySelector('.orc-peso'); if (el) el.value = v.pesoGramas; }
   if (v.tempoHoras) { const el = div.querySelector('.orc-tempo'); if (el) el.value = v.tempoHoras; }
-  if (v.filamentoIdSugerido && div._filCtrl) div._filCtrl.setValue(v.filamentoIdSugerido);
+  if (div._filRows && div._filRows[0]) {
+    if (v.pesoGramas) div._filRows[0].pesoInput.value = v.pesoGramas;
+    if (v.filamentoIdSugerido) div._filRows[0].ctrl.setValue(v.filamentoIdSugerido);
+  }
   if (v.impressoraIdSugerida && div._impCtrl) div._impCtrl.setValue(v.impressoraIdSugerida);
   if (div._recalcularFaixa) div._recalcularFaixa();
 }
@@ -149,11 +159,9 @@ function aplicarProdutoSelecionado(div, produtoId) {
 function orcamentoFieldsHtml(item) {
   const o = item.orcamento;
   return `
-    <div class="field"><label>Filamento usado</label>
-      <div class="search-select orc-filamentoId">
-        <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
-        <div class="search-select-list"></div>
-      </div>
+    <div class="field" style="min-width:100%"><label>Filamentos usados</label>
+      <div class="orc-filamentos-linhas"></div>
+      <button type="button" class="small secondary btn-add-filamento" style="margin-top:4px">+ Adicionar filamento</button>
     </div>
     <div class="field"><label>Impressora sugerida</label>
       <div class="search-select orc-impressoraId">
@@ -161,30 +169,63 @@ function orcamentoFieldsHtml(item) {
         <div class="search-select-list"></div>
       </div>
     </div>
-    <div class="field"><label>Peso da peça (g)</label><input class="orc-peso" type="number" step="0.01" value="${o ? o.pesoGramas : ''}" required /></div>
-    <div class="field"><label>Tempo de impressão (h)</label><input class="orc-tempo" type="number" step="0.01" value="${o ? o.tempoHoras : ''}" required /></div>
+    <div class="field"><label>Tempo de impressão (h)</label><input class="orc-tempo" type="number" step="0.01" value="${o ? o.tempoHoras : ''}" /></div>
     <div class="field"><label>Tarifa kWh (R$)</label><input class="orc-tarifa" type="number" step="0.01" placeholder="${paramsCache.tarifaKwh || ''}" value="${o ? o.tarifaKwh : ''}" /></div>
     <div class="field"><label>Margem (%)</label><input class="orc-margem" type="number" step="1" placeholder="${paramsCache.margemPadrao || ''}" value="${o && o.margemPercentual != null ? o.margemPercentual : ''}" /></div>
     <div class="field"><label>Preço final (R$)</label><input class="orc-valor" type="number" step="0.01" placeholder="usa a margem acima se vazio" value="${o ? o.precoVenda : ''}" /></div>
     <div class="field"><label>Validade do orçamento</label><input class="orc-validade" type="date" value="${o && o.validadeOrcamento ? o.validadeOrcamento.slice(0, 10) : ''}" /></div>
     <div class="orc-faixa-estimada muted" style="min-width:100%;font-size:13px"></div>
-    ${o ? `<div class="price-box" style="min-width:100%;margin-top:0"><div>Orçado: <b>${money(o.precoVenda)}</b> <span class="muted">(${o.pesoGramas}g, ${o.tempoHoras}h)</span>${o.validadeOrcamento ? ` · válido até ${escapeAttr(o.validadeOrcamento.slice(0, 10))}` : ''}</div></div>` : ''}
+    ${o ? `<div class="price-box" style="min-width:100%;margin-top:0"><div>Orçado: <b>${money(o.precoVenda)}</b> <span class="muted">(${somaPesoOrcamento(o)}g, ${o.tempoHoras}h)</span>${o.validadeOrcamento ? ` · válido até ${escapeAttr(o.validadeOrcamento.slice(0, 10))}` : ''}</div></div>` : ''}
   `;
+}
+
+// Adiciona uma linha de filamento (seletor + peso) na seção de orçamento de um item — uma peça
+// pode usar mais de um filamento (multicor/multimaterial), então o orçamento guarda uma lista.
+function addLinhaFilamento(div, section, dados) {
+  dados = dados || {};
+  const row = document.createElement('div');
+  row.className = 'orc-filamento-linha';
+  row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+  row.innerHTML = `
+    <div class="search-select orc-filamento-item" style="flex:1;min-width:180px">
+      <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
+      <div class="search-select-list"></div>
+    </div>
+    <input class="orc-peso-item" type="number" step="0.01" placeholder="Peso (g)" value="${dados.pesoGramas != null ? dados.pesoGramas : ''}" style="width:110px" />
+    <button type="button" class="small danger btn-remover-filamento-linha">✕</button>
+  `;
+  section.querySelector('.orc-filamentos-linhas').appendChild(row);
+  const ctrl = wireSearchSelect(row.querySelector('.orc-filamento-item'), filamentoItens(), () => recalcularFaixaEstimada(div), dados.filamentoId || '', 'Selecione um filamento');
+  row.querySelector('.orc-peso-item').addEventListener('input', () => recalcularFaixaEstimada(div));
+  row.querySelector('.btn-remover-filamento-linha').addEventListener('click', () => {
+    row.remove();
+    div._filRows = div._filRows.filter((r) => r.row !== row);
+    recalcularFaixaEstimada(div);
+  });
+  div._filRows.push({ row, ctrl, pesoInput: row.querySelector('.orc-peso-item') });
 }
 
 // Custo total (filamento + energia) com os valores atuais dos campos do item — mesma
 // fórmula do servidor (lib/pricing.js). Retorna null se faltar algo pra calcular.
 function custoTotalAtual(div) {
   const section = div.querySelector('.orcamento-item-section');
-  const peso = Number(section.querySelector('.orc-peso').value) || 0;
   const tempo = Number(section.querySelector('.orc-tempo').value) || 0;
-  const filamento = filamentosCache.find(f => f.id === Number(div._filCtrl.getValue()));
-  if (!filamento || !peso || !tempo) return null;
+  if (!tempo || !div._filRows || !div._filRows.length) return null;
+  let custoFilamento = 0;
+  let algumValido = false;
+  div._filRows.forEach(({ ctrl, pesoInput }) => {
+    const filamento = filamentosCache.find(f => f.id === Number(ctrl.getValue()));
+    const peso = Number(pesoInput.value) || 0;
+    if (filamento && peso > 0) {
+      custoFilamento += (filamento.precoPorKg / 1000) * peso;
+      algumValido = true;
+    }
+  });
+  if (!algumValido) return null;
   const impressora = impressorasCache.find(i => i.id === Number(div._impCtrl.getValue()));
   const tarifaInput = section.querySelector('.orc-tarifa').value;
   const tarifaKwh = tarifaInput !== '' ? Number(tarifaInput) : (paramsCache.tarifaKwh || 0);
   const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
-  const custoFilamento = (filamento.precoPorKg / 1000) * peso;
   const custoEnergia = ((potenciaW * tempo) / 1000) * tarifaKwh;
   return custoFilamento + custoEnergia;
 }
@@ -193,7 +234,7 @@ function custoTotalAtual(div) {
 // 100%-300% já usada em orcamento.html. Clicar numa linha preenche Margem e Preço final;
 // editar a Margem manualmente volta a deixar o Preço final livre (recalculado ao salvar).
 function recalcularFaixaEstimada(div) {
-  if (!div._filCtrl || !div._impCtrl) return;
+  if (!div._filRows || !div._impCtrl) return;
   const section = div.querySelector('.orcamento-item-section');
   const faixaEl = section.querySelector('.orc-faixa-estimada');
   const custoTotal = custoTotalAtual(div);
@@ -215,16 +256,83 @@ function recalcularFaixaEstimada(div) {
       recalcularFaixaEstimada(div);
     });
   });
+  atualizarTotalPedido();
+}
+
+// Soma o preço já orçado (ou o preview ao vivo, se o item ainda não foi salvo) de todos os
+// itens do modal aberto no momento — recalculado a cada mudança relevante em qualquer item.
+function atualizarTotalPedido() {
+  const el = document.getElementById('total-pedido');
+  if (!el) return;
+  let total = 0;
+  let temNaoOrcado = false;
+  document.querySelectorAll('#itens-container .item-block').forEach((div) => {
+    const quantidadeInput = div.querySelector('[name="quantidade"]');
+    const quantidade = quantidadeInput ? Number(quantidadeInput.value) || 1 : 1;
+    const preview = previewOrcamentoAtual(div);
+    if (preview) total += preview.precoVenda * quantidade;
+    else temNaoOrcado = true;
+  });
+  el.innerHTML = `Total do pedido: <b>${money(total)}</b>` + (temNaoOrcado ? ' <span class="muted">(considera só os produtos já orçados)</span>' : '');
+}
+
+// Lê os campos de orçamento preenchidos no momento (filamento, peso, tempo, margem/preço).
+// Retorna null se faltar filamento/peso/tempo — usado tanto pelo salvamento imediato (item já
+// existente) quanto por collectItem() pra mandar o orçamento junto na criação do pedido/item.
+function coletarOrcamentoInput(div) {
+  if (!div._filRows || !div._impCtrl) return null;
+  const section = div.querySelector('.orcamento-item-section');
+  const tempoHoras = section.querySelector('.orc-tempo').value;
+  const filamentos = div._filRows
+    .map(({ ctrl, pesoInput }) => ({ filamentoId: ctrl.getValue(), pesoGramas: pesoInput.value }))
+    .filter((f) => f.filamentoId && f.pesoGramas);
+  if (!filamentos.length || !tempoHoras) return null;
+  const body = {
+    filamentos,
+    impressoraId: div._impCtrl.getValue(),
+    tempoHoras,
+    tarifaKwh: section.querySelector('.orc-tarifa').value,
+    validadeOrcamento: section.querySelector('.orc-validade').value
+  };
+  const valorFinal = section.querySelector('.orc-valor').value;
+  if (valorFinal !== '') {
+    const custoTotal = custoTotalAtual(div) || 0;
+    body.margemFixa = String(Number(valorFinal) - custoTotal);
+  } else {
+    body.margemPercentual = section.querySelector('.orc-margem').value;
+  }
+  return body;
+}
+
+// Preview do preço orçado sem salvar nada (item ainda não existe no banco) — só pra o resumo
+// do item mostrar "Orçado: R$X" em vez de "Não orçado" assim que o vendedor preenche os campos
+// e clica em Concluir. O cálculo definitivo (e o que efetivamente é salvo) é sempre o do servidor.
+function previewOrcamentoAtual(div) {
+  const input = coletarOrcamentoInput(div);
+  if (!input) return null;
+  const custoTotal = custoTotalAtual(div) || 0;
+  const precoVenda = input.margemFixa !== undefined
+    ? custoTotal + Number(input.margemFixa)
+    : custoTotal * (1 + Number(input.margemPercentual || paramsCache.margemPadrao || 0) / 100);
+  const filamentos = input.filamentos.map((f) => ({ filamentoId: Number(f.filamentoId), pesoGramas: Number(f.pesoGramas) }));
+  return { precoVenda, filamentos, tempoHoras: Number(input.tempoHoras) };
 }
 
 function wireOrcamentoFields(div, item) {
   const section = div.querySelector('.orcamento-item-section');
   const o = item.orcamento;
   section.innerHTML = orcamentoFieldsHtml(item);
-  div._filCtrl = wireSearchSelect(section.querySelector('.orc-filamentoId'), filamentoItens(), () => recalcularFaixaEstimada(div), o ? o.filamentoId : '', 'Selecione um filamento');
-  div._impCtrl = wireSearchSelect(section.querySelector('.orc-impressoraId'), impressoraItens(), () => recalcularFaixaEstimada(div), o ? o.impressoraSugeridaId : '', 'Selecione uma impressora');
+  div._filRows = [];
+  const filamentosExistentes = filamentosDoOrcamento(o);
+  if (filamentosExistentes.length) {
+    filamentosExistentes.forEach((f) => addLinhaFilamento(div, section, f));
+  } else {
+    addLinhaFilamento(div, section, {});
+  }
+  section.querySelector('.btn-add-filamento').addEventListener('click', () => addLinhaFilamento(div, section, {}));
+  div._impCtrl = wireSearchSelect(section.querySelector('.orc-impressoraId'), impressoraItens(), () => recalcularFaixaEstimada(div), o ? o.impressoraSugeridaId : impressoraPadraoA1(), 'Selecione uma impressora');
   div._recalcularFaixa = () => recalcularFaixaEstimada(div);
-  ['orc-peso', 'orc-tempo', 'orc-tarifa', 'orc-margem'].forEach((cls) => {
+  ['orc-tempo', 'orc-tarifa', 'orc-margem'].forEach((cls) => {
     section.querySelector(`.${cls}`).addEventListener('input', () => recalcularFaixaEstimada(div));
   });
   // Editar a margem manualmente (não via clique na faixa) volta o Preço final pro modo
@@ -233,32 +341,17 @@ function wireOrcamentoFields(div, item) {
     section.querySelector('.orc-valor').value = '';
   });
   recalcularFaixaEstimada(div);
-  // Chamado pelo botão "Concluir" do item — salva o orçamento se houver dados suficientes
-  // (filamento + peso + tempo). Retorna false silenciosamente se não houver nada pra salvar
-  // ainda, pra não travar quem só quer recolher o item sem orçar agora.
-  div._salvarOrcamentoSeCompleto = async () => {
-    const filamentoId = div._filCtrl.getValue();
-    const pesoGramas = section.querySelector('.orc-peso').value;
-    const tempoHoras = section.querySelector('.orc-tempo').value;
-    if (!filamentoId || !pesoGramas || !tempoHoras) return false;
-    const body = {
-      filamentoId,
-      impressoraId: div._impCtrl.getValue(),
-      pesoGramas,
-      tempoHoras,
-      tarifaKwh: section.querySelector('.orc-tarifa').value,
-      validadeOrcamento: section.querySelector('.orc-validade').value
+  // Item já existe no banco (pedido salvo antes) — "Concluir" salva o orçamento na hora via PATCH.
+  // Item novo (ainda sem id, sendo criado ou adicionado a um pedido existente) não tem essa função:
+  // os dados ficam só nos campos e collectItem() os envia junto no POST do pedido/item.
+  if (item.id) {
+    div._salvarOrcamentoSeCompleto = async () => {
+      const body = coletarOrcamentoInput(div);
+      if (!body) return false;
+      await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${item.id}/orcamento`, body);
+      return true;
     };
-    const valorFinal = section.querySelector('.orc-valor').value;
-    if (valorFinal !== '') {
-      const custoTotal = custoTotalAtual(div) || 0;
-      body.margemFixa = String(Number(valorFinal) - custoTotal);
-    } else {
-      body.margemPercentual = section.querySelector('.orc-margem').value;
-    }
-    await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${item.id}/orcamento`, body);
-    return true;
-  };
+  }
 }
 
 function renderResumoItem(div, valores) {
@@ -275,7 +368,7 @@ function renderResumoItem(div, valores) {
   const subTxt = [cor, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
   const o = valores.orcamento;
   const precoHtml = o
-    ? `<span class="item-summary-price">${money(o.precoVenda)}</span>`
+    ? `<span class="item-summary-price">${money(o.precoVenda * Number(quantidade))}</span>`
     : `<span class="item-summary-price muted">Não orçado</span>`;
   summary.innerHTML = `
     ${thumbHtml}
@@ -328,6 +421,7 @@ async function removerItem(div) {
     if (document.querySelectorAll('.item-block').length <= 1) return;
     div.remove();
   }
+  atualizarTotalPedido();
 }
 
 function addItemBlock(valores) {
@@ -367,9 +461,16 @@ function addItemBlock(valores) {
       <div class="field chk-novo-produto-field"><label><input type="checkbox" class="chk-novo-produto" /> Cadastrar este produto no catálogo</label></div>
       <div class="novo-produto-fields" style="display:none;min-width:100%;flex-wrap:wrap;gap:10px;">
         <div class="field"><label>Nome do produto (catálogo)</label><input class="input-nome-produto" /></div>
-        <div class="field"><label>Imagem</label><input type="file" class="input-imagem-produto" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+        <div class="field" style="min-width:220px">
+          <label>Imagem</label>
+          <div class="dropzone item-dropzone-imagem">
+            <img class="thumb-lg preview-imagem-item" style="display:none" alt="Prévia da imagem" />
+            <p class="muted dropzone-texto-item" style="margin:0;font-size:12px">Arraste, cole (Ctrl+V) ou <span class="dropzone-link">clique</span> pra escolher uma imagem</p>
+            <input type="file" class="input-imagem-produto" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+          </div>
+        </div>
       </div>
-      ${valores.id ? '<div class="orcamento-item-section item-details-footer" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end"></div>' : ''}
+      <div class="orcamento-item-section item-details-footer" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end"></div>
       <div class="row item-details-footer" style="width:100%">
         <button type="button" class="small secondary btn-concluir-item">Concluir</button>
         <button type="button" class="small danger btn-remover-item-detalhe">✕ Remover produto</button>
@@ -377,15 +478,26 @@ function addItemBlock(valores) {
     </div>
   `;
   // Monta a seção de orçamento ANTES do seletor de cor, pra que o auto-link cor→filamento
-  // (mais abaixo) já encontre div._filCtrl pronto mesmo no carregamento inicial do item.
-  if (valores.id) wireOrcamentoFields(div, valores);
+  // (mais abaixo) já encontre div._filRows pronto mesmo no carregamento inicial do item. Roda
+  // pra todo item (novo ou já existente) — permite orçar já na criação do pedido.
+  wireOrcamentoFields(div, valores);
   div._corCtrl = wireSearchSelect(div.querySelector('.cor-filamento-wrap'), corFilamentoItens(), (val) => {
     div.querySelector('[name="corFilamento"]').value = val;
-    if (val && div._filCtrl && !div._filCtrl.getValue()) {
+    if (val && div._filRows && div._filRows[0] && !div._filRows[0].ctrl.getValue()) {
       const match = filamentosCache.find(f => `${f.material} ${f.cor}` === val);
-      if (match) div._filCtrl.setValue(match.id);
+      if (match) div._filRows[0].ctrl.setValue(match.id);
     }
   }, valores.corFilamento || '', 'Digitar manualmente');
+  wireImageDropzone(
+    div.querySelector('.item-dropzone-imagem'),
+    div.querySelector('.input-imagem-produto'),
+    async (file) => {
+      const preview = div.querySelector('.preview-imagem-item');
+      preview.src = await fileToBase64(file);
+      preview.style.display = 'inline-block';
+      div.querySelector('.dropzone-texto-item').style.display = 'none';
+    }
+  );
 
   div.querySelector('.btn-remover-item-detalhe').addEventListener('click', () => removerItem(div));
   div.querySelector('.btn-concluir-item').addEventListener('click', async () => {
@@ -403,9 +515,12 @@ function addItemBlock(valores) {
         abrirEditarPedido(pedidoEmEdicaoId);
         return;
       }
+    } else {
+      valores.orcamento = previewOrcamentoAtual(div) || valores.orcamento;
     }
     renderResumoItem(div, valores);
     alternarModoItem(div, false);
+    atualizarTotalPedido();
   });
   wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosCache, (produtoId) => {
     div.dataset.produtoId = produtoId || '';
@@ -420,8 +535,10 @@ function addItemBlock(valores) {
     renderResumoItem(div, valores);
     alternarModoItem(div, false);
   }
+  div.querySelector('[name="quantidade"]').addEventListener('input', atualizarTotalPedido);
 
   document.getElementById('itens-container').appendChild(div);
+  atualizarTotalPedido();
 }
 
 async function collectItem(block) {
@@ -435,7 +552,8 @@ async function collectItem(block) {
     corFilamento: block.querySelector('[name="corFilamento"]').value,
     quantidade: block.querySelector('[name="quantidade"]').value,
     produtoId: produtoIdSelecionado || null,
-    imagem: null
+    imagem: null,
+    orcamentoInput: coletarOrcamentoInput(block)
   };
   if (produtoIdSelecionado) {
     const produto = produtosCache.find(p => p.id === Number(produtoIdSelecionado));
@@ -485,6 +603,7 @@ function abrirNovoPedido() {
       <h3>Produtos do pedido</h3>
       <div id="itens-container"></div>
       <button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>
+      <div id="total-pedido" class="muted" style="margin-bottom:14px;font-size:14px"></div>
       <div class="inline">
         <div class="field" style="min-width:100%"><label>Observações do pedido</label><textarea name="observacoes" placeholder="Prazo, urgência, detalhes extras"></textarea></div>
       </div>
@@ -546,14 +665,13 @@ function abrirNovoPedido() {
 window.abrirNovoPedido = abrirNovoPedido;
 
 async function loadCatalogos() {
-  [filamentosCache, produtosCache, clientesCache, contasCache, impressorasCache, variacoesCache, usuariosCache, paramsCache] = await Promise.all([
-    apiGet('/api/filamentos'), apiGet('/api/produtos'), apiGet('/api/clientes'), apiGet('/api/contas-financeiras'), apiGet('/api/impressoras'), apiGet('/api/variacoes'), apiGet('/api/usuarios'), apiGet('/api/params')
+  [filamentosCache, produtosCache, clientesCache, impressorasCache, variacoesCache, usuariosCache, paramsCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/produtos'), apiGet('/api/clientes'), apiGet('/api/impressoras'), apiGet('/api/variacoes'), apiGet('/api/usuarios'), apiGet('/api/params')
   ]);
 }
 
 async function aprovar(id) {
-  const forma = prompt('Forma de pagamento combinada com o cliente (ex: Pix, cartão):', '');
-  await apiPatch(`/api/pedidos/${id}/aprovacao`, { decisao: 'aprovado', formaPagamentoCombinada: forma || '' });
+  await apiPatch(`/api/pedidos/${id}/aprovacao`, { decisao: 'aprovado' });
   toast('Pedido aprovado e enviado para a fila de produção!');
   load();
 }
@@ -568,29 +686,12 @@ async function marcarEntrega(id, status) {
   toast(status === 'entregue' ? 'Entrega confirmada!' : 'Pedido marcado como saiu para entrega!');
   load();
 }
-function abrirRegistrarPagamento(id) {
-  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
-  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
-  document.getElementById('modal-content').innerHTML = `
-    <h2 style="margin-top:0">Registrar pagamento</h2>
-    <form class="inline" id="form-pagamento">
-      <div class="field" style="min-width:100%"><label>Conta que recebeu</label><select name="contaId">${contaOpts}</select></div>
-      <div class="field" style="min-width:100%"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
-      <div class="row" style="width:100%">
-        <button type="submit">Salvar</button>
-        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
-      </div>
-    </form>
-  `;
-  document.getElementById('modal-bg').style.display = 'flex';
-  document.getElementById('form-pagamento').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await apiPatch(`/api/pedidos/${id}/pagamento`, Object.fromEntries(fd.entries()));
-    toast('Pagamento registrado!');
-    closeModal();
-    load();
-  });
+async function excluirPedido(id) {
+  if (!confirm('Excluir este pedido definitivamente? Se já estiver pago, o pagamento é estornado no caixa. Se alguma peça já foi impressa, o filamento usado volta pro estoque. Essa ação não pode ser desfeita.')) return;
+  await apiDelete(`/api/pedidos/${id}`);
+  toast('Pedido excluído.');
+  closeModal();
+  load();
 }
 function abrirEditarPedido(id) {
   const p = pedidosCache.find((x) => x.id === id);
@@ -614,9 +715,11 @@ function abrirEditarPedido(id) {
       ${podeMexerItens
         ? '<button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>'
         : '<p class="muted" style="font-size:13px;margin-bottom:14px">Pedido já aprovado — não é mais possível adicionar ou remover produtos.</p>'}
+      <div id="total-pedido" class="muted" style="margin-bottom:14px;font-size:14px"></div>
       <div class="row" style="width:100%">
         <button type="submit">Salvar</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+        <button type="button" class="danger" style="margin-left:auto" onclick="excluirPedido(${p.id})">Excluir pedido</button>
       </div>
     </form>
   `;
@@ -657,7 +760,7 @@ function abrirEditarPedido(id) {
     load();
   });
 }
-window.aprovar = aprovar; window.recusar = recusar; window.marcarEntrega = marcarEntrega; window.abrirRegistrarPagamento = abrirRegistrarPagamento; window.abrirEditarPedido = abrirEditarPedido;
+window.aprovar = aprovar; window.recusar = recusar; window.marcarEntrega = marcarEntrega; window.excluirPedido = excluirPedido; window.abrirEditarPedido = abrirEditarPedido;
 
 // ---------- Produção ----------
 async function atribuir(pedidoId, itemId, selectEl) {
@@ -692,8 +795,9 @@ function itensDe(status) {
   return out;
 }
 function impressoraSelect(p, it) {
+  const placeholder = `<option value="" ${!it.impressoraId ? 'selected' : ''}>— Selecionar —</option>`;
   const opts = impressorasCache.map(i => `<option value="${i.id}" ${it.impressoraId === i.id ? 'selected' : ''}>${escapeHtml(i.nome)}</option>`).join('');
-  return `<select onclick="event.stopPropagation()" onchange="event.stopPropagation(); atribuir(${p.id}, ${it.id}, this)" style="width:150px">${opts}</select>`;
+  return `<select onclick="event.stopPropagation()" onchange="event.stopPropagation(); atribuir(${p.id}, ${it.id}, this)" style="width:150px">${placeholder}${opts}</select>`;
 }
 function renderFila() {
   const fila = itensDe('na_fila');
@@ -701,7 +805,7 @@ function renderFila() {
     <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Peso/Tempo</th><th>Impressora</th><th>Ações</th></tr></thead>
     <tbody>${fila.map(({ p, it }) => `<tr>
       <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
-      <td>${it.orcamento ? it.orcamento.pesoGramas + 'g / ' + it.orcamento.tempoHoras + 'h' : '—'}</td>
+      <td>${it.orcamento ? somaPesoOrcamento(it.orcamento) + 'g / ' + it.orcamento.tempoHoras + 'h' : '—'}</td>
       <td>${impressoraSelect(p, it)}</td>
       <td>
         <button class="small" onclick="event.stopPropagation(); iniciar(${p.id}, ${it.id})" ${!it.impressoraId ? 'disabled title="Atribua uma impressora primeiro"' : ''}>Iniciar impressão</button>
@@ -736,9 +840,6 @@ function acoes(p) {
     if (!p.statusEntrega || p.statusEntrega === 'aguardando') a += `<button class="small secondary" onclick="event.stopPropagation(); marcarEntrega(${p.id},'em_entrega')">Saiu para entrega</button>`;
     if (p.statusEntrega === 'em_entrega') a += `<button class="small secondary" onclick="event.stopPropagation(); marcarEntrega(${p.id},'entregue')">Marcar entregue</button>`;
   }
-  if (['concluido','na_fila','imprimindo'].includes(p.status) && p.statusPagamento === 'pendente') {
-    a += `<button class="small secondary" onclick="event.stopPropagation(); abrirRegistrarPagamento(${p.id})">Registrar pagamento</button>`;
-  }
   if (p.itens.some(it => it.orcamento)) {
     a += `<button class="small secondary" onclick="event.stopPropagation(); window.open('orcamento-imprimir.html?id=${p.id}', '_blank')">Exportar PDF</button>`;
   }
@@ -752,7 +853,7 @@ function produtos(p) {
 function valorPedido(p) {
   const orcados = p.itens.filter(it => it.orcamento);
   if (!orcados.length) return '—';
-  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda, 0);
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
   return money(total) + (orcados.length < p.itens.length ? ` <span class="muted">(${orcados.length}/${p.itens.length})</span>` : '');
 }
 

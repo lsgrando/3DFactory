@@ -69,6 +69,39 @@ async function apiDelete(url) {
   const r = await fetch(url, { method: 'DELETE' });
   return handleResponse(r, 'Erro ao excluir');
 }
+// Zona de arrastar/colar/clicar pra escolher uma imagem. zone precisa ter tabindex (pra poder
+// receber foco e colar com Ctrl+V) e conter `input` (um <input type="file"> escondido).
+// onFile(file) é chamado depois que o arquivo já foi sincronizado em input.files — assim quem
+// lê input.files[0] depois (ex.: no submit de um form) não precisa saber de onde o arquivo veio.
+function wireImageDropzone(zone, input, onFile) {
+  async function aplicarArquivo(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('Selecione um arquivo de imagem válido.', 'error');
+      return;
+    }
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    await onFile(file);
+  }
+  if (!zone.hasAttribute('tabindex')) zone.setAttribute('tabindex', '0');
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => aplicarArquivo(e.target.files[0]));
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    aplicarArquivo(e.dataTransfer.files[0]);
+  });
+  zone.addEventListener('paste', (e) => {
+    const item = [...(e.clipboardData ? e.clipboardData.items : [])].find((i) => i.type.startsWith('image/'));
+    if (item) { e.preventDefault(); aplicarArquivo(item.getAsFile()); }
+  });
+}
+window.wireImageDropzone = wireImageDropzone;
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -88,7 +121,8 @@ const STATUS_LABEL = {
   imprimindo: 'Imprimindo',
   concluido: 'Concluído',
   em_entrega: 'Em entrega',
-  entregue: 'Entregue'
+  entregue: 'Entregue',
+  parcial: 'Parcial'
 };
 
 function badge(status, labelOverride) {
@@ -98,6 +132,18 @@ function badge(status, labelOverride) {
 
 function money(v) {
   return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+// Um orçamento salvo antes da mudança pra múltiplos filamentos ainda tem o formato antigo
+// (filamentoId/pesoGramas singulares, sem `filamentos`) — trata como lista de 1 item.
+function filamentosDoOrcamento(orcamento) {
+  if (!orcamento) return [];
+  if (orcamento.filamentos) return orcamento.filamentos;
+  if (orcamento.filamentoId) return [{ filamentoId: orcamento.filamentoId, pesoGramas: orcamento.pesoGramas }];
+  return [];
+}
+function somaPesoOrcamento(orcamento) {
+  return filamentosDoOrcamento(orcamento).reduce((s, f) => s + Number(f.pesoGramas || 0), 0);
 }
 
 function fmtDate(iso) {
@@ -170,12 +216,29 @@ function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
   const list = root.querySelector('.search-select-list');
   let selecionado = (valorInicial === null || valorInicial === undefined) ? '' : String(valorInicial);
 
+  // Quando os itens têm cor (ex.: filamentos), mostra uma bolinha persistente ao lado do campo
+  // com a cor do item selecionado — só o texto do label às vezes trunca/passa despercebido.
+  let swatchEl = null;
+  if (items.some((it) => it.hex)) {
+    swatchEl = document.createElement('span');
+    swatchEl.className = 'search-select-swatch';
+    root.insertBefore(swatchEl, input);
+    root.classList.add('has-swatch');
+  }
+  function atualizarSwatch(valor) {
+    if (!swatchEl) return;
+    const it = items.find((x) => String(x.value) === String(valor));
+    if (it && it.hex) { swatchEl.style.background = it.hex; swatchEl.style.display = 'block'; }
+    else { swatchEl.style.display = 'none'; }
+  }
+
   function rotulo(valor) {
     if (!valor) return '';
     const it = items.find((x) => String(x.value) === String(valor));
     return it ? it.label : String(valor); // fallback: mostra o valor bruto se não achar mais na lista (ex.: item removido do estoque)
   }
   input.value = rotulo(selecionado);
+  atualizarSwatch(selecionado);
   onSelect(selecionado); // mantém o estado externo (ex.: input hidden) em sincronia com o valor inicial
 
   function renderLista(filtro) {
@@ -202,6 +265,7 @@ function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
     e.preventDefault();
     selecionado = item.dataset.value || '';
     input.value = rotulo(selecionado);
+    atualizarSwatch(selecionado);
     list.style.display = 'none';
     onSelect(selecionado);
   });
@@ -217,6 +281,7 @@ function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
     setValue: (valor) => {
       selecionado = (valor === null || valor === undefined) ? '' : String(valor);
       input.value = rotulo(selecionado);
+      atualizarSwatch(selecionado);
       onSelect(selecionado);
     }
   };
@@ -283,11 +348,24 @@ function closeModal() {
 }
 window.closeModal = closeModal;
 
+// Marca o modal como "com alterações não salvas" a partir do primeiro input/change do usuário
+// depois que ele foi aberto — reseta sozinho sempre que um novo modal é montado (innerHTML do
+// #modal-content é substituído), sem precisar mexer em cada tela que abre um modal.
+let modalDirty = false;
+
 (function wireModalBackdrop() {
   const bg = document.getElementById('modal-bg');
   if (!bg) return;
+  const content = document.getElementById('modal-content');
+  if (content) {
+    content.addEventListener('input', () => { modalDirty = true; });
+    content.addEventListener('change', () => { modalDirty = true; });
+    new MutationObserver(() => { modalDirty = false; }).observe(content, { childList: true });
+  }
   bg.addEventListener('click', (e) => {
-    if (e.target === bg) closeModal();
+    if (e.target !== bg) return;
+    if (modalDirty && !confirm('Fechar sem salvar? As informações preenchidas serão perdidas.')) return;
+    closeModal();
   });
 })();
 

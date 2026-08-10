@@ -13,6 +13,50 @@
 
   <div class="grid" id="saldos"></div>
 
+  <h2>Pagamentos de pedidos</h2>
+  <div class="card">
+    <form class="inline" id="form-filtro-pagamentos">
+      <div class="field"><label>Cliente ou #pedido</label><input name="busca" placeholder="Buscar..." /></div>
+      <div class="field"><label>Forma de pagamento</label><select name="formaPagamento" id="filtro-pgto-forma"><option value="">Todas</option></select></div>
+      <div class="field"><label>Pago de</label><input name="de" type="date" /></div>
+      <div class="field"><label>Pago até</label><input name="ate" type="date" /></div>
+      <div class="row">
+        <button type="submit">Filtrar</button>
+        <button type="button" class="secondary" id="btn-limpar-filtro-pagamentos">Limpar</button>
+      </div>
+    </form>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Pendentes de pagamento</h3>
+    <table>
+      <thead><tr><th>#</th><th>Cliente</th><th>Status</th><th>Valor</th><th>Ações</th></tr></thead>
+      <tbody id="tbody-pedidos-pendentes"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Pagos recentemente</h3>
+    <table>
+      <thead><tr><th>#</th><th>Cliente</th><th>Forma</th><th>Conta</th><th>Data</th><th>Valor</th><th>Ações</th></tr></thead>
+      <tbody id="tbody-pedidos-pagos"></tbody>
+    </table>
+  </div>
+
+  <h2>Contas a pagar</h2>
+  <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0">Parcelas a vencer</h3>
+      <button type="button" onclick="abrirNovaContaAPagar()">+ Nova conta a pagar</button>
+    </div>
+    <table>
+      <thead><tr><th>Vencimento</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Ações</th></tr></thead>
+      <tbody id="tbody-parcelas-vencer"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Compromissos cadastrados</h3>
+    <div id="lista-contas-a-pagar"></div>
+  </div>
+
   <h2>Nova movimentação</h2>
   <div class="card">
     <form class="inline" id="form-mov">
@@ -34,6 +78,19 @@
       <div class="field"><label>Data</label><input name="data" type="date" /></div>
       <div class="field" style="min-width:100%"><label>Descrição</label><input name="descricao" placeholder="Detalhes do lançamento" /></div>
       <button type="submit">Lançar</button>
+    </form>
+  </div>
+
+  <h2>Transferência entre contas</h2>
+  <div class="card">
+    <form class="inline" id="form-transferencia">
+      <div class="field"><label>Conta de origem</label><select name="contaOrigemId" id="transf-origem"></select></div>
+      <div class="field"><label>Conta de destino</label><select name="contaDestinoId" id="transf-destino"></select></div>
+      <div class="field"><label>Forma</label><select name="formaPagamento" id="transf-forma"></select></div>
+      <div class="field"><label>Valor (R$)</label><input name="valor" type="number" step="0.01" min="0.01" required /></div>
+      <div class="field"><label>Data</label><input name="data" type="date" /></div>
+      <div class="field" style="min-width:100%"><label>Descrição (opcional)</label><input name="descricao" placeholder="Detalhes da transferência" /></div>
+      <button type="submit">Transferir</button>
     </form>
   </div>
 
@@ -79,6 +136,8 @@ let contasCache = [];
 let sociosCache = [];
 let movimentacoesCache = [];
 let relatorioCache = [];
+let pedidosCache = [];
+let contasAPagarCache = [];
 
 function categoriaOptions(tipo) {
   const list = tipo === 'saida' ? CATEGORIAS_SAIDA : CATEGORIAS_ENTRADA;
@@ -126,6 +185,26 @@ document.getElementById('form-mov').addEventListener('submit', async (e) => {
   toast('Movimentação lançada com sucesso!');
   form.reset();
   atualizarFormTipo();
+  await load();
+});
+
+document.getElementById('form-transferencia').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  if (form.contaOrigemId.value === form.contaDestinoId.value) {
+    toast('Conta de origem e destino não podem ser a mesma', 'error');
+    return;
+  }
+  await apiPost('/api/transferencias', {
+    contaOrigemId: form.contaOrigemId.value,
+    contaDestinoId: form.contaDestinoId.value,
+    formaPagamento: form.formaPagamento.value,
+    valor: form.valor.value,
+    descricao: form.descricao.value,
+    data: form.data.value || undefined
+  });
+  toast('Transferência registrada com sucesso!');
+  form.reset();
   await load();
 });
 
@@ -182,6 +261,216 @@ function abrirReembolso(socioId) {
   });
 }
 window.abrirReembolso = abrirReembolso;
+
+function parcelasAVencer() {
+  const linhas = [];
+  contasAPagarCache.forEach(c => {
+    c.parcelas.filter(p => !p.paga && !p.cancelada).forEach(p => linhas.push({ conta: c, parcela: p }));
+  });
+  return linhas.sort((a, b) => a.parcela.vencimento.localeCompare(b.parcela.vencimento));
+}
+
+function renderContasAPagar() {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const linhas = parcelasAVencer();
+  document.getElementById('tbody-parcelas-vencer').innerHTML = linhas.map(({ conta, parcela }) => {
+    const vencida = parcela.vencimento.slice(0, 10) < hoje;
+    return `<tr>
+      <td class="muted">${vencida ? `<b style="color:var(--red)">${fmtDate(parcela.vencimento)}</b>` : fmtDate(parcela.vencimento)}</td>
+      <td>${escapeHtml(conta.descricao)} — parcela ${parcela.numero}/${parcela.totalParcelas}</td>
+      <td>${escapeHtml(conta.categoriaDetalhe || conta.categoria)}</td>
+      <td>${money(parcela.valor)}</td>
+      <td><button class="small secondary" onclick="abrirMarcarParcelaPaga(${parcela.id})">Marcar como paga</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="muted">Nenhuma parcela pendente.</td></tr>';
+
+  document.getElementById('lista-contas-a-pagar').innerHTML = contasAPagarCache.map(c => {
+    const pagas = c.parcelas.filter(p => p.paga).length;
+    const pendentes = c.parcelas.filter(p => !p.paga && !p.cancelada);
+    const restante = pendentes.reduce((s, p) => s + p.valor, 0);
+    return `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #eee">
+      <div>
+        <b>${escapeHtml(c.descricao)}</b> <span class="muted">(${escapeHtml(c.categoriaDetalhe || c.categoria)})</span><br>
+        <span class="muted">${pagas} de ${c.parcelas.length} parcelas pagas · falta ${money(restante)}</span>
+      </div>
+      <div>
+        ${pendentes.length ? `<button class="small danger" onclick="cancelarRestante(${c.id})">Cancelar parcelas restantes</button>` : ''}
+      </div>
+    </div>`;
+  }).join('') || '<p class="muted">Nenhuma conta a pagar cadastrada.</p>';
+}
+
+function abrirNovaContaAPagar() {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Nova conta a pagar</h2>
+    <form id="form-conta-a-pagar">
+      <div class="field" style="margin-bottom:10px;min-width:100%"><label>Descrição</label><input name="descricao" placeholder="ex: Parcelamento Impressora Bambu" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Categoria</label><select name="categoria" id="cap-categoria"></select></div>
+      <div class="field" id="cap-categoria-outro-field" style="display:none;margin-bottom:10px"><label>Descreva a categoria</label><input name="categoriaDetalhe" /></div>
+      <div class="field" style="margin-bottom:10px"><label>Valor da parcela (R$)</label><input name="valorParcela" type="number" step="0.01" min="0.01" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Quantidade de parcelas</label><input name="quantidadeParcelas" type="number" min="1" value="1" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Vencimento da 1ª parcela</label><input name="primeiroVencimento" type="date" required /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('cap-categoria').innerHTML = categoriaOptions('saida');
+  document.getElementById('cap-categoria').addEventListener('change', (e) => {
+    document.getElementById('cap-categoria-outro-field').style.display = e.target.value === 'Outro' ? '' : 'none';
+  });
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-conta-a-pagar').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPost('/api/contas-a-pagar', Object.fromEntries(fd.entries()));
+    toast('Conta a pagar cadastrada!');
+    closeModal();
+    load();
+  });
+}
+window.abrirNovaContaAPagar = abrirNovaContaAPagar;
+
+function abrirMarcarParcelaPaga(parcelaId) {
+  let conta, parcela;
+  for (const c of contasAPagarCache) {
+    const p = c.parcelas.find(x => x.id === parcelaId);
+    if (p) { conta = c; parcela = p; break; }
+  }
+  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Marcar como paga — ${escapeHtml(conta.descricao)} (${parcela.numero}/${parcela.totalParcelas})</h2>
+    <p class="muted">Valor: ${money(parcela.valor)}</p>
+    <form id="form-parcela-paga">
+      <div class="field" style="margin-bottom:10px"><label>Conta que pagou</label><select name="contaId">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Data</label><input name="data" type="date" /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Confirmar pagamento</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-parcela-paga').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPatch(`/api/contas-a-pagar/parcelas/${parcelaId}/pagar`, Object.fromEntries(fd.entries()));
+    toast('Parcela paga registrada!');
+    closeModal();
+    load();
+  });
+}
+window.abrirMarcarParcelaPaga = abrirMarcarParcelaPaga;
+
+async function cancelarRestante(contaId) {
+  if (!confirm('Cancelar as parcelas restantes desse compromisso? As parcelas já pagas continuam no histórico normalmente.')) return;
+  await apiPatch(`/api/contas-a-pagar/${contaId}/cancelar-restante`, {});
+  toast('Parcelas restantes canceladas.');
+  load();
+}
+window.cancelarRestante = cancelarRestante;
+
+function valorPedido(p) {
+  const orcados = p.itens.filter(it => it.orcamento);
+  return orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
+}
+function pagoDoPedido(p) {
+  return (p.pagamentos || []).filter(pg => !pg.estornado).reduce((s, pg) => s + pg.valor, 0);
+}
+function saldoDevedor(p) {
+  return Math.max(0, valorPedido(p) - pagoDoPedido(p));
+}
+
+function abrirRegistrarPagamentoPedido(id) {
+  const p = pedidosCache.find(x => x.id === id);
+  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Registrar pagamento — pedido #${id}</h2>
+    <p class="muted">Saldo devedor: ${money(saldoDevedor(p))}</p>
+    <form id="form-pagamento-pedido">
+      <div class="field" style="margin-bottom:10px"><label>Valor</label><input name="valor" type="number" step="0.01" min="0.01" value="${saldoDevedor(p).toFixed(2)}" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Conta que recebeu</label><select name="contaId">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-pagamento-pedido').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiPost(`/api/pedidos/${id}/pagamentos`, Object.fromEntries(fd.entries()));
+    toast('Pagamento registrado!');
+    closeModal();
+    load();
+  });
+}
+window.abrirRegistrarPagamentoPedido = abrirRegistrarPagamentoPedido;
+
+async function desfazerPagamentoPedido(pedidoId, pagamentoId) {
+  if (!confirm('Desfazer este pagamento? Isso estorna o lançamento no caixa e reduz o valor pago do pedido.')) return;
+  await apiPost(`/api/pedidos/${pedidoId}/pagamentos/${pagamentoId}/estorno`, {});
+  toast('Pagamento desfeito.');
+  load();
+}
+window.desfazerPagamentoPedido = desfazerPagamentoPedido;
+
+let filtroPagamentos = { busca: '', formaPagamento: '', de: '', ate: '' };
+
+function combinaBusca(p, termo) {
+  if (!termo) return true;
+  return String(p.id).includes(termo) || (p.cliente || '').toLowerCase().includes(termo);
+}
+
+function renderPagamentosPedidos() {
+  const f = filtroPagamentos;
+  const termo = f.busca.trim().toLowerCase();
+
+  const pendentes = pedidosCache.filter(p =>
+    ['pendente', 'parcial'].includes(p.statusPagamento) && ['na_fila', 'imprimindo', 'concluido'].includes(p.status) && combinaBusca(p, termo)
+  );
+  document.getElementById('tbody-pedidos-pendentes').innerHTML = pendentes.map(p => `
+    <tr>
+      <td>#${p.id}</td>
+      <td>${escapeHtml(p.cliente)}</td>
+      <td>${badge(p.status)}</td>
+      <td>${p.statusPagamento === 'parcial' ? `${money(pagoDoPedido(p))} pago / ${money(saldoDevedor(p))} falta` : money(valorPedido(p))}</td>
+      <td><button class="small secondary" onclick="abrirRegistrarPagamentoPedido(${p.id})">Registrar pagamento</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="muted">Nenhum pedido pendente de pagamento.</td></tr>';
+
+  // Uma linha por pagamento (não por pedido) — deixa claro quando um pedido foi pago em partes.
+  let linhasPagamento = [];
+  pedidosCache.forEach(p => {
+    (p.pagamentos || []).filter(pg => !pg.estornado).forEach(pg => {
+      if (!combinaBusca(p, termo)) return;
+      linhasPagamento.push({ pedido: p, pagamento: pg });
+    });
+  });
+  if (f.formaPagamento) linhasPagamento = linhasPagamento.filter(l => l.pagamento.formaPagamento === f.formaPagamento);
+  if (f.de) linhasPagamento = linhasPagamento.filter(l => l.pagamento.dataPagamento >= f.de);
+  if (f.ate) linhasPagamento = linhasPagamento.filter(l => l.pagamento.dataPagamento <= f.ate + 'T23:59:59.999Z');
+  linhasPagamento = linhasPagamento.sort((a, b) => (b.pagamento.dataPagamento || '').localeCompare(a.pagamento.dataPagamento || ''));
+  const algumFiltroAtivo = !!(termo || f.formaPagamento || f.de || f.ate);
+  if (!algumFiltroAtivo) linhasPagamento = linhasPagamento.slice(0, 20);
+  document.getElementById('tbody-pedidos-pagos').innerHTML = linhasPagamento.map(({ pedido: p, pagamento: pg }) => `
+    <tr>
+      <td>#${p.id}</td>
+      <td>${escapeHtml(p.cliente)}</td>
+      <td>${escapeHtml(pg.formaPagamento)}</td>
+      <td>${escapeHtml(pg.contaId ? (contasCache.find(c => c.id === pg.contaId) || {}).nome || '—' : '—')}</td>
+      <td class="muted">${fmtDate(pg.dataPagamento)}</td>
+      <td>${money(pg.valor)}</td>
+      <td><button class="small danger" onclick="desfazerPagamentoPedido(${p.id}, ${pg.id})">Desfazer pagamento</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="muted">Nenhum pagamento registrado ainda.</td></tr>';
+}
 
 function renderSaldos() {
   document.getElementById('saldos').innerHTML = contasCache.map(c => `
@@ -256,9 +545,26 @@ document.getElementById('btn-limpar-filtro').addEventListener('click', () => {
   aplicarFiltro();
 });
 
+document.getElementById('form-filtro-pagamentos').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.target;
+  filtroPagamentos = {
+    busca: form.busca.value,
+    formaPagamento: form.formaPagamento.value,
+    de: form.de.value,
+    ate: form.ate.value
+  };
+  renderPagamentosPedidos();
+});
+document.getElementById('btn-limpar-filtro-pagamentos').addEventListener('click', () => {
+  document.getElementById('form-filtro-pagamentos').reset();
+  filtroPagamentos = { busca: '', formaPagamento: '', de: '', ate: '' };
+  renderPagamentosPedidos();
+});
+
 async function load() {
-  [contasCache, sociosCache, movimentacoesCache] = await Promise.all([
-    apiGet('/api/contas-financeiras'), apiGet('/api/socios'), apiGet('/api/movimentacoes-financeiras')
+  [contasCache, sociosCache, movimentacoesCache, pedidosCache, contasAPagarCache] = await Promise.all([
+    apiGet('/api/contas-financeiras'), apiGet('/api/socios'), apiGet('/api/movimentacoes-financeiras'), apiGet('/api/pedidos'), apiGet('/api/contas-a-pagar')
   ]);
 
   document.getElementById('mov-forma').innerHTML = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
@@ -266,12 +572,21 @@ async function load() {
   document.getElementById('mov-responsavel').innerHTML = '<option value="">Caixa da empresa</option>' + sociosCache.map(s => `<option value="${s.id}">${escapeHtml(s.nome)}</option>`).join('');
   atualizarFormTipo();
 
+  const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  document.getElementById('transf-origem').innerHTML = contaOpts;
+  document.getElementById('transf-destino').innerHTML = contaOpts;
+  document.getElementById('transf-forma').innerHTML = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+
+  document.getElementById('filtro-pgto-forma').innerHTML = '<option value="">Todas</option>' + FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
+
   document.getElementById('filtro-conta').innerHTML = '<option value="">Todas</option>' + contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
   document.getElementById('filtro-socio').innerHTML = '<option value="">Todos</option>' + sociosCache.map(s => `<option value="${s.id}">${escapeHtml(s.nome)}</option>`).join('');
   const categoriasVistas = [...new Set(movimentacoesCache.map(m => m.categoria))].sort();
   document.getElementById('filtro-categoria').innerHTML = '<option value="">Todas</option>' + categoriasVistas.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join('');
 
   renderSaldos();
+  renderPagamentosPedidos();
+  renderContasAPagar();
   renderSociosAReceber();
   aplicarFiltro();
 }

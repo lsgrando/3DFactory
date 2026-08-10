@@ -161,6 +161,7 @@ tr:hover td { background: #fafcfc; }
 .badge.recusado, .badge.expirado { background: #f8dcdc; color: var(--red); }
 .badge.pendente { background: #f8dcdc; color: var(--red); }
 .badge.pago { background: #d9f0e2; color: var(--green); }
+.badge.parcial { background: #fff1d6; color: var(--orange); }
 .badge.entregue { background: #d9f0e2; color: var(--green); }
 .badge.em_entrega { background: #fff1d6; color: var(--orange); }
 form.inline { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
@@ -204,7 +205,7 @@ button.small { padding: 5px 10px; font-size: 12px; margin-right: 4px; margin-bot
   cursor: pointer;
   transition: background .15s, border-color .15s;
 }
-.dropzone:hover, .dropzone.drag-over { background: var(--accent); border-color: var(--primary); }
+.dropzone:hover, .dropzone.drag-over, .dropzone:focus { background: var(--accent); border-color: var(--primary); outline: none; }
 .dropzone .dropzone-link { color: var(--primary); text-decoration: underline; }
 .produto-combobox { position: relative; }
 .produto-combobox-list {
@@ -262,6 +263,20 @@ button.small { padding: 5px 10px; font-size: 12px; margin-right: 4px; margin-bot
   margin-right: 7px;
   background: repeating-conic-gradient(#e2e2e2 0% 25%, #f5f5f5 0% 50%) 50% / 8px 8px;
 }
+.search-select-swatch {
+  display: none;
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.15);
+  pointer-events: none;
+  background: repeating-conic-gradient(#e2e2e2 0% 25%, #f5f5f5 0% 50%) 50% / 8px 8px;
+}
+.search-select.has-swatch .search-select-input { padding-left: 28px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 .pedido-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 14px; margin: 10px 0; }
 .pedido-detail div span { color: var(--muted); }

@@ -119,7 +119,7 @@ async function load() {
     return;
   }
 
-  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda, 0);
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
   const validades = orcados.map((it) => it.orcamento.validadeOrcamento).filter(Boolean).sort();
   const validade = validades[0] || null;
   const hoje = new Date().toLocaleDateString('pt-BR');
@@ -150,7 +150,7 @@ async function load() {
               <td>${escapeHtml(it.descricao)}</td>
               <td>${it.quantidade}</td>
               <td>${escapeHtml(it.variacao || '—')}</td>
-              <td class="valor">${money(it.orcamento.precoVenda)}</td>
+              <td class="valor">${money(it.orcamento.precoVenda * it.quantidade)}</td>
             </tr>
           `).join('')}
         </tbody>

@@ -56,10 +56,8 @@ function calcularCustoVariacao(pesoGramas, tempoHoras, filamentoId, impressoraId
   return custoFilamento + custoEnergia;
 }
 
-function filamentoSugeridoOptions(selecionado) {
-  return '<option value="">—</option>' + filamentosCache.map(f =>
-    `<option value="${f.id}" ${f.id === selecionado ? 'selected' : ''}>${escapeHtml(f.material)} — ${escapeHtml(f.cor)}${f.marca ? ' (' + escapeHtml(f.marca) + ')' : ''}</option>`
-  ).join('');
+function filamentoItens() {
+  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
 }
 function impressoraSugeridaOptions(selecionada) {
   return '<option value="">—</option>' + impressorasCache.map(i =>
@@ -80,7 +78,7 @@ function atualizarPreviewBloco(block) {
   const preview = block.querySelector('.preview-custo-bloco');
   const peso = block.querySelector('[name="pesoGramas"]').value;
   const tempo = block.querySelector('[name="tempoHoras"]').value;
-  const filamentoId = block.querySelector('[name="filamentoIdSugerido"]').value;
+  const filamentoId = block._filCtrl ? block._filCtrl.getValue() : '';
   const impressoraId = block.querySelector('[name="impressoraIdSugerida"]').value;
   const custo = calcularCustoVariacao(peso, tempo, filamentoId, impressoraId);
   if (custo == null) { preview.innerHTML = ''; return; }
@@ -110,11 +108,17 @@ function addVariacaoBlock(valores) {
     <div class="field"><label>Peso (g)</label><input name="pesoGramas" type="number" step="0.01" value="${valores.pesoGramas != null ? valores.pesoGramas : ''}" /></div>
     <div class="field"><label>Tempo (h)</label><input name="tempoHoras" type="number" step="0.01" value="${valores.tempoHoras != null ? valores.tempoHoras : ''}" /></div>
     <div class="field"><label>Preço de venda (R$)</label><input name="precoVenda" type="number" step="0.01" value="${valores.precoVenda != null ? valores.precoVenda : ''}" placeholder="opcional" /></div>
-    <div class="field"><label>Filamento sugerido</label><select name="filamentoIdSugerido">${filamentoSugeridoOptions(valores.filamentoIdSugerido)}</select></div>
+    <div class="field"><label>Filamento sugerido</label>
+      <div class="search-select variacao-filamento-wrap">
+        <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
+        <div class="search-select-list"></div>
+      </div>
+    </div>
     <div class="field"><label>Impressora sugerida</label><select name="impressoraIdSugerida">${impressoraSugeridaOptions(valores.impressoraIdSugerida)}</select></div>
     <div class="field" style="min-width:100%"><label>Descrição / observação</label><input name="descricao" value="${escapeAttr(valores.descricao || '')}" /></div>
     <div class="preview-custo-bloco" style="min-width:100%"></div>
   `;
+  div._filCtrl = wireSearchSelect(div.querySelector('.variacao-filamento-wrap'), filamentoItens(), () => atualizarPreviewBloco(div), valores.filamentoIdSugerido || '', 'Nenhum');
   div.addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-usar-margem');
     if (!btn) return;
@@ -131,7 +135,7 @@ function addVariacaoBlock(valores) {
     div.remove();
     if (!document.querySelectorAll('.variacao-block').length) addVariacaoBlock({ nome: 'Único' });
   });
-  ['pesoGramas', 'tempoHoras', 'filamentoIdSugerido', 'impressoraIdSugerida'].forEach((nome) => {
+  ['pesoGramas', 'tempoHoras', 'impressoraIdSugerida'].forEach((nome) => {
     div.querySelector(`[name="${nome}"]`).addEventListener('input', () => atualizarPreviewBloco(div));
   });
   document.getElementById('variacoes-container').appendChild(div);
@@ -144,26 +148,11 @@ function wireDropzoneImagem() {
   const preview = document.getElementById('preview-imagem');
   const texto = document.getElementById('dropzone-texto');
 
-  async function aplicarArquivo(file) {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      toast('Selecione um arquivo de imagem válido.', 'error');
-      return;
-    }
+  wireImageDropzone(zone, input, async (file) => {
     imagemBase64Atual = await fileToBase64(file);
     preview.src = imagemBase64Atual;
     preview.style.display = 'inline-block';
     texto.style.display = 'none';
-  }
-
-  zone.addEventListener('click', () => input.click());
-  input.addEventListener('change', (e) => aplicarArquivo(e.target.files[0]));
-  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    zone.classList.remove('drag-over');
-    aplicarArquivo(e.dataTransfer.files[0]);
   });
 }
 
@@ -222,7 +211,7 @@ function formProduto(titulo, valores, onSubmit) {
         pesoGramas,
         tempoHoras,
         precoVenda,
-        filamentoIdSugerido: block.querySelector('[name="filamentoIdSugerido"]').value,
+        filamentoIdSugerido: block._filCtrl ? block._filCtrl.getValue() : '',
         impressoraIdSugerida: block.querySelector('[name="impressoraIdSugerida"]').value,
         descricao: block.querySelector('[name="descricao"]').value
       };
