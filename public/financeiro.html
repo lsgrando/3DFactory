@@ -395,6 +395,7 @@ function abrirRegistrarPagamentoPedido(id) {
       <div class="field" style="margin-bottom:10px"><label>Valor</label><input name="valor" type="number" step="0.01" min="0.01" value="${saldoDevedor(p).toFixed(2)}" required /></div>
       <div class="field" style="margin-bottom:10px"><label>Conta que recebeu</label><select name="contaId">${contaOpts}</select></div>
       <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Data do pagamento</label><input name="data" type="date" value="${new Date().toISOString().slice(0, 10)}" /></div>
       <div class="row" style="width:100%">
         <button type="submit">Salvar</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>

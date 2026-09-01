@@ -1247,7 +1247,7 @@ async function api(req, res, pathname, query) {
         return sendJSON(res, 400, { error: `Valor maior que o saldo devedor (R$ ${saldoDevedor.toFixed(2)})` });
       }
 
-      const dataPagamento = new Date().toISOString();
+      const dataPagamento = body.data ? new Date(body.data).toISOString() : new Date().toISOString();
       const mov = movimentacoesFinanceiras.insert({
         tipo: 'entrada',
         valor,
@@ -1263,7 +1263,7 @@ async function api(req, res, pathname, query) {
         estornado: false,
         estornoDe: null,
         data: dataPagamento,
-        criadoEm: dataPagamento
+        criadoEm: new Date().toISOString()
       });
       contasFinanceiras.ajustarSaldo(conta.id, valor);
       pagamentosPedido.insert({
