@@ -484,6 +484,19 @@ function addItemBlock(valores) {
       toast('Preencha a descrição da peça antes de concluir.', 'error');
       return;
     }
+    const itemId = div.dataset.itemId;
+    if (itemId && pedidoEmEdicaoId) {
+      // O PATCH de orçamento abaixo só grava peso/tempo/preço — sem isto, mudanças em
+      // quantidade/descrição/etc feitas junto no mesmo item ficariam de fora do "Concluir".
+      await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}`, {
+        descricao: div.querySelector('[name="descricao"]').value,
+        quantidade: div.querySelector('[name="quantidade"]').value,
+        dimensoes: div.querySelector('[name="dimensoes"]').value,
+        variacao: div.querySelector('[name="variacao"]').value,
+        corFilamento: div.querySelector('[name="corFilamento"]').value,
+        produtoId: div.dataset.produtoId || null
+      });
+    }
     if (div._salvarOrcamentoSeCompleto) {
       const salvou = await div._salvarOrcamentoSeCompleto();
       if (salvou) {
