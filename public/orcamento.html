@@ -198,7 +198,10 @@ function openOrcamentoForm(p, item) {
   impSelectCtrl = wireSearchSelect(document.getElementById('ss-impressoraId'), impItens, (val) => {
     document.querySelector('#ss-impressoraId [name="impressoraId"]').value = val;
   }, impItens[0] ? impItens[0].value : '', 'Selecione uma impressora');
-  wireProdutoCombobox(document.getElementById('produto-combobox-orc'), produtosCache, (produtoId) => {
+  // Produto desativado some da lista pra não ser escolhido daqui em diante, mas continua
+  // aparecendo aqui se já era o produto deste item (senão o combobox mostraria em branco).
+  const produtosSelecionaveisOrc = produtosCache.filter((p) => p.ativo !== false || p.id === item.produtoId);
+  wireProdutoCombobox(document.getElementById('produto-combobox-orc'), produtosSelecionaveisOrc, (produtoId) => {
     produtoSelecionadoOrc = produtoId;
     document.getElementById('variacao-select-wrap').innerHTML = variacaoSelectHtml(produtoSelecionadoOrc);
     wireVariacaoSelectIfPresent(produtoSelecionadoOrc);

@@ -500,7 +500,10 @@ function addItemBlock(valores) {
     alternarModoItem(div, false);
     atualizarTotalPedido();
   });
-  wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosCache, (produtoId) => {
+  // Produto desativado some da lista pra não ser escolhido em pedidos novos, mas continua
+  // aparecendo aqui se já era o produto deste item (senão o combobox mostraria em branco).
+  const produtosSelecionaveis = produtosCache.filter((p) => p.ativo !== false || p.id === valores.produtoId);
+  wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosSelecionaveis, (produtoId) => {
     div.dataset.produtoId = produtoId || '';
     aplicarProdutoSelecionado(div, produtoId);
   }, valores.produtoId || null);
@@ -658,7 +661,7 @@ function produtosResumo(p) {
 function valorPedido(p) {
   const orcados = p.itens.filter(it => it.orcamento);
   if (!orcados.length) return '—';
-  return money(orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0));
+  return money(orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0) + totalDespesasPedido(p));
 }
 
 function cardHtml(p) {

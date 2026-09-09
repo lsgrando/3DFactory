@@ -49,6 +49,8 @@ let variacoesCache = [];
 let usuariosCache = [];
 let pedidosCache = [];
 let paramsCache = {};
+let contasCache = [];
+let sociosCache = [];
 let itemSeq = 0;
 let pedidoEmEdicaoId = null;
 let pedidoEmEdicaoStatus = null;
@@ -273,6 +275,10 @@ function atualizarTotalPedido() {
     if (preview) total += preview.precoVenda * quantidade;
     else temNaoOrcado = true;
   });
+  if (pedidoEmEdicaoId) {
+    const pedidoAtual = pedidosCache.find((x) => x.id === pedidoEmEdicaoId);
+    if (pedidoAtual) total += totalDespesasPedido(pedidoAtual);
+  }
   el.innerHTML = `Total do pedido: <b>${money(total)}</b>` + (temNaoOrcado ? ' <span class="muted">(considera só os produtos já orçados)</span>' : '');
 }
 
@@ -522,7 +528,10 @@ function addItemBlock(valores) {
     alternarModoItem(div, false);
     atualizarTotalPedido();
   });
-  wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosCache, (produtoId) => {
+  // Produto desativado some da lista pra não ser escolhido em pedidos novos, mas continua
+  // aparecendo aqui se já era o produto deste item (senão o combobox mostraria em branco).
+  const produtosSelecionaveis = produtosCache.filter((p) => p.ativo !== false || p.id === valores.produtoId);
+  wireProdutoCombobox(div.querySelector('.produto-combobox'), produtosSelecionaveis, (produtoId) => {
     div.dataset.produtoId = produtoId || '';
     aplicarProdutoSelecionado(div, produtoId);
   }, valores.produtoId || null);
@@ -665,8 +674,8 @@ function abrirNovoPedido() {
 window.abrirNovoPedido = abrirNovoPedido;
 
 async function loadCatalogos() {
-  [filamentosCache, produtosCache, clientesCache, impressorasCache, variacoesCache, usuariosCache, paramsCache] = await Promise.all([
-    apiGet('/api/filamentos'), apiGet('/api/produtos'), apiGet('/api/clientes'), apiGet('/api/impressoras'), apiGet('/api/variacoes'), apiGet('/api/usuarios'), apiGet('/api/params')
+  [filamentosCache, produtosCache, clientesCache, impressorasCache, variacoesCache, usuariosCache, paramsCache, contasCache, sociosCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/produtos'), apiGet('/api/clientes'), apiGet('/api/impressoras'), apiGet('/api/variacoes'), apiGet('/api/usuarios'), apiGet('/api/params'), apiGet('/api/contas-financeiras'), apiGet('/api/socios')
   ]);
 }
 
@@ -716,6 +725,8 @@ function abrirEditarPedido(id) {
         ? '<button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>'
         : '<p class="muted" style="font-size:13px;margin-bottom:14px">Pedido já aprovado — não é mais possível adicionar ou remover produtos.</p>'}
       <div id="total-pedido" class="muted" style="margin-bottom:14px;font-size:14px"></div>
+      <h3>Despesas adicionais (embalagem, frete etc.)</h3>
+      <div id="despesas-container"></div>
       <div class="row" style="width:100%">
         <button type="submit">Salvar</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
@@ -728,6 +739,7 @@ function abrirEditarPedido(id) {
   if (podeMexerItens) {
     document.getElementById('btn-add-item').addEventListener('click', () => addItemBlock());
   }
+  renderDespesasPedido(p);
 
   document.getElementById('form-editar-pedido').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -760,6 +772,96 @@ function abrirEditarPedido(id) {
     load();
   });
 }
+
+// ---------- Despesas adicionais do pedido (embalagem, frete etc.) ----------
+// Somam ao valor cobrado do cliente e geram uma saída no Financeiro vinculada ao pedido, mas
+// não aparecem detalhadas no orçamento impresso — só o total final (ver orcamento-imprimir.html).
+const CATEGORIAS_DESPESA_PEDIDO = ['Material de embalagem', 'Frete para cliente', 'Outro'];
+
+function renderDespesasPedido(p) {
+  const container = document.getElementById('despesas-container');
+  if (!container) return;
+  const podeMexer = p.statusPagamento === 'pendente';
+  const ativas = (p.despesasAdicionais || []).filter((d) => !d.estornado);
+  container.innerHTML = `
+    ${ativas.length ? ativas.map((d) => `
+      <div class="row" style="align-items:center;margin-bottom:6px">
+        <span>${escapeHtml(d.categoria === 'Outro' ? d.categoriaDetalhe : d.categoria)}${d.descricao ? ` — ${escapeHtml(d.descricao)}` : ''}</span>
+        <b style="margin-left:auto">${money(d.valor)}</b>
+        ${podeMexer ? `<button type="button" class="small danger btn-remover-despesa" data-id="${d.id}">✕</button>` : ''}
+      </div>
+    `).join('') : '<p class="muted" style="font-size:13px">Nenhuma despesa adicional lançada.</p>'}
+    ${podeMexer
+      ? '<div id="form-despesa-wrap"><button type="button" class="small secondary" id="btn-add-despesa">+ Adicionar despesa</button></div>'
+      : '<p class="muted" style="font-size:13px">Pedido já tem pagamento registrado — estorne antes de alterar despesas.</p>'}
+  `;
+  container.querySelectorAll('.btn-remover-despesa').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Remover esta despesa? O lançamento correspondente no caixa também é estornado.')) return;
+      const atualizado = await apiDelete(`/api/pedidos/${p.id}/despesas/${btn.dataset.id}`);
+      toast('Despesa removida.');
+      atualizarPedidoEmEdicao(atualizado);
+    });
+  });
+  const btnAdd = document.getElementById('btn-add-despesa');
+  if (btnAdd) btnAdd.addEventListener('click', () => abrirFormDespesa(p));
+}
+
+function abrirFormDespesa(p) {
+  const wrap = document.getElementById('form-despesa-wrap');
+  const contaOpts = contasCache.map((c) => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+  const categoriaOpts = CATEGORIAS_DESPESA_PEDIDO.map((c) => `<option value="${c}">${c}</option>`).join('');
+  wrap.innerHTML = `
+    <div class="inline" style="margin-top:8px">
+      <div class="field"><label>Categoria</label><select name="categoria">${categoriaOpts}</select></div>
+      <div class="field categoria-detalhe-field" style="display:none"><label>Descreva a categoria</label><input name="categoriaDetalhe" /></div>
+      <div class="field"><label>Descrição (opcional)</label><input name="descricao" placeholder="ex: Sedex, caixa personalizada" /></div>
+      <div class="field"><label>Valor (R$)</label><input name="valor" type="number" step="0.01" min="0.01" required /></div>
+      <div class="field"><label>Conta que pagou</label><select name="contaId" id="despesa-conta">${contaOpts}</select></div>
+      <div class="field"><label>Forma de pagamento</label><select name="formaPagamento" id="despesa-forma"></select></div>
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <button type="button" class="small" id="btn-salvar-despesa">Salvar despesa</button>
+      <button type="button" class="small secondary" id="btn-cancelar-despesa">Cancelar</button>
+    </div>
+  `;
+  const categoriaSelect = wrap.querySelector('[name="categoria"]');
+  const detalheField = wrap.querySelector('.categoria-detalhe-field');
+  categoriaSelect.addEventListener('change', () => {
+    detalheField.style.display = categoriaSelect.value === 'Outro' ? '' : 'none';
+  });
+  const despesaContaSelect = wrap.querySelector('#despesa-conta');
+  const despesaFormaSelect = wrap.querySelector('#despesa-forma');
+  const atualizarFormaDespesa = () => atualizarFormaPagamentoPorConta(despesaFormaSelect, contasCache.find((c) => c.id === Number(despesaContaSelect.value)));
+  despesaContaSelect.addEventListener('change', atualizarFormaDespesa);
+  atualizarFormaDespesa();
+  wrap.querySelector('#btn-cancelar-despesa').addEventListener('click', () => renderDespesasPedido(p));
+  wrap.querySelector('#btn-salvar-despesa').addEventListener('click', async () => {
+    const valor = wrap.querySelector('[name="valor"]').value;
+    if (!valor || Number(valor) <= 0) { toast('Informe um valor válido.', 'error'); return; }
+    const atualizado = await apiPost(`/api/pedidos/${p.id}/despesas`, {
+      categoria: categoriaSelect.value,
+      categoriaDetalhe: wrap.querySelector('[name="categoriaDetalhe"]').value,
+      descricao: wrap.querySelector('[name="descricao"]').value,
+      valor,
+      contaId: wrap.querySelector('[name="contaId"]').value,
+      formaPagamento: wrap.querySelector('[name="formaPagamento"]').value
+    });
+    toast('Despesa adicionada!');
+    atualizarPedidoEmEdicao(atualizado);
+  });
+}
+
+// Atualiza o pedido em cache/tela depois de mudar suas despesas, sem fechar o modal.
+function atualizarPedidoEmEdicao(pedidoAtualizado) {
+  const idx = pedidosCache.findIndex((x) => x.id === pedidoAtualizado.id);
+  if (idx >= 0) pedidosCache[idx] = pedidoAtualizado;
+  else pedidosCache.push(pedidoAtualizado);
+  renderPedidos();
+  renderDespesasPedido(pedidoAtualizado);
+  atualizarTotalPedido();
+}
+
 window.aprovar = aprovar; window.recusar = recusar; window.marcarEntrega = marcarEntrega; window.excluirPedido = excluirPedido; window.abrirEditarPedido = abrirEditarPedido;
 
 // ---------- Produção ----------
@@ -853,7 +955,7 @@ function produtos(p) {
 function valorPedido(p) {
   const orcados = p.itens.filter(it => it.orcamento);
   if (!orcados.length) return '—';
-  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0) + totalDespesasPedido(p);
   return money(total) + (orcados.length < p.itens.length ? ` <span class="muted">(${orcados.length}/${p.itens.length})</span>` : '');
 }
 

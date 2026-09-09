@@ -138,10 +138,25 @@ let movimentacoesCache = [];
 let relatorioCache = [];
 let pedidosCache = [];
 let contasAPagarCache = [];
+let taxasCartaoCache = [];
 
 function categoriaOptions(tipo) {
   const list = tipo === 'saida' ? CATEGORIAS_SAIDA : CATEGORIAS_ENTRADA;
   return list.map(c => `<option value="${c}">${c}</option>`).join('');
+}
+
+// Sócio pagando do próprio bolso não passa pela conta da empresa — nesse caso a forma de
+// pagamento fica livre (não tem conta pra restringir). Com conta selecionada, restringe a forma
+// às válidas pra ela (ex: conta Caixa só aceita Dinheiro — ver formasPagamentoDaConta em app.js).
+function atualizarFormaMov() {
+  const formaSelect = document.getElementById('mov-forma');
+  const responsavelSelecionado = document.getElementById('mov-responsavel').value;
+  if (responsavelSelecionado) {
+    atualizarFormaPagamentoPorConta(formaSelect, null);
+    return;
+  }
+  const conta = contasCache.find(c => c.id === Number(document.getElementById('mov-conta').value));
+  atualizarFormaPagamentoPorConta(formaSelect, conta);
 }
 
 function atualizarFormTipo() {
@@ -151,6 +166,7 @@ function atualizarFormTipo() {
   document.getElementById('mov-responsavel-field').style.display = tipo === 'saida' ? '' : 'none';
   document.getElementById('mov-responsavel').value = '';
   document.getElementById('mov-conta-field').style.display = '';
+  atualizarFormaMov();
 }
 document.getElementById('mov-tipo').addEventListener('change', atualizarFormTipo);
 
@@ -160,7 +176,9 @@ document.getElementById('mov-categoria').addEventListener('change', (e) => {
 
 document.getElementById('mov-responsavel').addEventListener('change', (e) => {
   document.getElementById('mov-conta-field').style.display = e.target.value ? 'none' : '';
+  atualizarFormaMov();
 });
+document.getElementById('mov-conta').addEventListener('change', atualizarFormaMov);
 
 document.getElementById('form-mov').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -222,7 +240,6 @@ function abrirReembolso(socioId) {
     m.responsavelId === socioId && m.contaId === null && m.tipo === 'saida' && !m.reembolsado && !m.estornado
   );
   const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
-  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
   document.getElementById('modal-content').innerHTML = `
     <h2 style="margin-top:0">Reembolsar ${escapeHtml(socio.nome)}</h2>
     <form id="form-reembolso">
@@ -234,8 +251,8 @@ function abrirReembolso(socioId) {
           </label>
         `).join('')}
       </div>
-      <div class="field" style="margin-bottom:10px"><label>Conta que vai pagar</label><select name="contaId">${contaOpts}</select></div>
-      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Conta que vai pagar</label><select name="contaId" id="reembolso-conta">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento" id="reembolso-forma"></select></div>
       <div class="field" style="margin-bottom:10px"><label>Descrição (opcional)</label><input name="descricao" placeholder="Reembolso a ${escapeAttr(socio.nome)}" /></div>
       <div class="row" style="width:100%">
         <button type="submit">Confirmar reembolso</button>
@@ -244,6 +261,11 @@ function abrirReembolso(socioId) {
     </form>
   `;
   document.getElementById('modal-bg').style.display = 'flex';
+  const reembolsoContaSelect = document.getElementById('reembolso-conta');
+  const reembolsoFormaSelect = document.getElementById('reembolso-forma');
+  const atualizarFormaReembolso = () => atualizarFormaPagamentoPorConta(reembolsoFormaSelect, contasCache.find(c => c.id === Number(reembolsoContaSelect.value)));
+  reembolsoContaSelect.addEventListener('change', atualizarFormaReembolso);
+  atualizarFormaReembolso();
   document.getElementById('form-reembolso').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -285,13 +307,17 @@ function renderContasAPagar() {
   }).join('') || '<tr><td colspan="5" class="muted">Nenhuma parcela pendente.</td></tr>';
 
   document.getElementById('lista-contas-a-pagar').innerHTML = contasAPagarCache.map(c => {
-    const pagas = c.parcelas.filter(p => p.paga).length;
+    const parcelasPagas = c.parcelas.filter(p => p.paga);
     const pendentes = c.parcelas.filter(p => !p.paga && !p.cancelada);
     const restante = pendentes.reduce((s, p) => s + p.valor, 0);
+    const comprovantes = parcelasPagas.filter(p => p.comprovante).map(p =>
+      `<a href="${escapeAttr(p.comprovante)}" target="_blank" rel="noopener" style="font-size:12px">📎 parcela ${p.numero}</a>`
+    ).join(' · ');
     return `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #eee">
       <div>
         <b>${escapeHtml(c.descricao)}</b> <span class="muted">(${escapeHtml(c.categoriaDetalhe || c.categoria)})</span><br>
-        <span class="muted">${pagas} de ${c.parcelas.length} parcelas pagas · falta ${money(restante)}</span>
+        <span class="muted">${parcelasPagas.length} de ${c.parcelas.length} parcelas pagas · falta ${money(restante)}</span>
+        ${comprovantes ? `<br>${comprovantes}` : ''}
       </div>
       <div>
         ${pendentes.length ? `<button class="small danger" onclick="cancelarRestante(${c.id})">Cancelar parcelas restantes</button>` : ''}
@@ -339,14 +365,14 @@ function abrirMarcarParcelaPaga(parcelaId) {
     if (p) { conta = c; parcela = p; break; }
   }
   const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
-  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
   document.getElementById('modal-content').innerHTML = `
     <h2 style="margin-top:0">Marcar como paga — ${escapeHtml(conta.descricao)} (${parcela.numero}/${parcela.totalParcelas})</h2>
     <p class="muted">Valor: ${money(parcela.valor)}</p>
     <form id="form-parcela-paga">
-      <div class="field" style="margin-bottom:10px"><label>Conta que pagou</label><select name="contaId">${contaOpts}</select></div>
-      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Conta que pagou</label><select name="contaId" id="parcela-conta">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento" id="parcela-forma"></select></div>
       <div class="field" style="margin-bottom:10px"><label>Data</label><input name="data" type="date" /></div>
+      <div class="field" style="margin-bottom:10px;min-width:100%"><label>Comprovante (opcional)</label><input type="file" id="parcela-comprovante" accept="image/*,application/pdf" /></div>
       <div class="row" style="width:100%">
         <button type="submit">Confirmar pagamento</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
@@ -354,10 +380,18 @@ function abrirMarcarParcelaPaga(parcelaId) {
     </form>
   `;
   document.getElementById('modal-bg').style.display = 'flex';
+  const contaSelect = document.getElementById('parcela-conta');
+  const formaSelect = document.getElementById('parcela-forma');
+  const atualizarForma = () => atualizarFormaPagamentoPorConta(formaSelect, contasCache.find(c => c.id === Number(contaSelect.value)));
+  contaSelect.addEventListener('change', atualizarForma);
+  atualizarForma();
   document.getElementById('form-parcela-paga').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await apiPatch(`/api/contas-a-pagar/parcelas/${parcelaId}/pagar`, Object.fromEntries(fd.entries()));
+    const body = Object.fromEntries(fd.entries());
+    const comprovanteFile = document.getElementById('parcela-comprovante').files[0];
+    if (comprovanteFile) body.comprovanteBase64 = await fileToBase64(comprovanteFile);
+    await apiPatch(`/api/contas-a-pagar/parcelas/${parcelaId}/pagar`, body);
     toast('Parcela paga registrada!');
     closeModal();
     load();
@@ -375,27 +409,41 @@ window.cancelarRestante = cancelarRestante;
 
 function valorPedido(p) {
   const orcados = p.itens.filter(it => it.orcamento);
-  return orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
+  return orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0) + totalDespesasPedido(p);
 }
 function pagoDoPedido(p) {
   return (p.pagamentos || []).filter(pg => !pg.estornado).reduce((s, pg) => s + pg.valor, 0);
 }
+function descontoDoPedido(p) {
+  return (p.pagamentos || []).filter(pg => !pg.estornado).reduce((s, pg) => s + (pg.desconto || 0), 0);
+}
 function saldoDevedor(p) {
-  return Math.max(0, valorPedido(p) - pagoDoPedido(p));
+  return Math.max(0, valorPedido(p) - pagoDoPedido(p) - descontoDoPedido(p));
+}
+
+// Taxa cadastrada em Taxas de Cartão pra essa forma+parcelas (mesma lógica do servidor,
+// ver taxaCartaoDoPagamento em server.js) — usada só pra mostrar a prévia do valor líquido.
+function taxaCartaoDoPagamento(forma, parcelas) {
+  if (forma === 'Cartão de Débito') return taxasCartaoCache.find(t => t.tipo === 'debito' && t.parcelas === 1);
+  if (forma === 'Cartão de Crédito') return taxasCartaoCache.find(t => t.tipo === 'credito' && t.parcelas === Number(parcelas || 1));
+  return null;
 }
 
 function abrirRegistrarPagamentoPedido(id) {
   const p = pedidosCache.find(x => x.id === id);
   const contaOpts = contasCache.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
-  const formaOpts = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');
   document.getElementById('modal-content').innerHTML = `
     <h2 style="margin-top:0">Registrar pagamento — pedido #${id}</h2>
     <p class="muted">Saldo devedor: ${money(saldoDevedor(p))}</p>
     <form id="form-pagamento-pedido">
-      <div class="field" style="margin-bottom:10px"><label>Valor</label><input name="valor" type="number" step="0.01" min="0.01" value="${saldoDevedor(p).toFixed(2)}" required /></div>
-      <div class="field" style="margin-bottom:10px"><label>Conta que recebeu</label><select name="contaId">${contaOpts}</select></div>
-      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento">${formaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Valor recebido</label><input name="valor" type="number" step="0.01" min="0.01" value="${saldoDevedor(p).toFixed(2)}" required /></div>
+      <div class="field" style="margin-bottom:10px"><label>Desconto concedido (opcional)</label><input name="desconto" type="number" step="0.01" min="0" value="0" /></div>
+      <div class="field" style="margin-bottom:10px"><label>Conta que recebeu</label><select name="contaId" id="pgto-conta">${contaOpts}</select></div>
+      <div class="field" style="margin-bottom:10px"><label>Forma de pagamento</label><select name="formaPagamento" id="pgto-forma"></select></div>
+      <div class="field" style="margin-bottom:10px" id="pgto-parcelas-field"><label>Parcelas</label><select name="parcelasCartao" id="pgto-parcelas"></select></div>
       <div class="field" style="margin-bottom:10px"><label>Data do pagamento</label><input name="data" type="date" value="${new Date().toISOString().slice(0, 10)}" /></div>
+      <div class="field" style="margin-bottom:10px;min-width:100%"><label>Comprovante (opcional)</label><input type="file" id="pgto-comprovante" accept="image/*,application/pdf" /></div>
+      <p class="muted" id="pgto-preview" style="min-width:100%"></p>
       <div class="row" style="width:100%">
         <button type="submit">Salvar</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
@@ -403,10 +451,47 @@ function abrirRegistrarPagamentoPedido(id) {
     </form>
   `;
   document.getElementById('modal-bg').style.display = 'flex';
+  const pgtoContaSelect = document.getElementById('pgto-conta');
+  const pgtoFormaSelect = document.getElementById('pgto-forma');
+  const pgtoParcelasField = document.getElementById('pgto-parcelas-field');
+  const pgtoParcelasSelect = document.getElementById('pgto-parcelas');
+  const pgtoValorInput = document.querySelector('#form-pagamento-pedido [name="valor"]');
+  const pgtoPreview = document.getElementById('pgto-preview');
+
+  function atualizarPreviewTaxa() {
+    const ehCredito = pgtoFormaSelect.value === 'Cartão de Crédito';
+    pgtoParcelasField.style.display = ehCredito ? '' : 'none';
+    if (ehCredito) {
+      const opcoes = taxasCartaoCache.filter(t => t.tipo === 'credito').sort((a, b) => a.parcelas - b.parcelas);
+      const atual = pgtoParcelasSelect.value;
+      pgtoParcelasSelect.innerHTML = opcoes.length
+        ? opcoes.map(t => `<option value="${t.parcelas}">${t.parcelas}x (${t.taxaPercentual}%)</option>`).join('')
+        : '<option value="1">1x (sem taxa cadastrada)</option>';
+      if (opcoes.some(t => String(t.parcelas) === atual)) pgtoParcelasSelect.value = atual;
+    }
+    const taxa = taxaCartaoDoPagamento(pgtoFormaSelect.value, pgtoParcelasSelect.value);
+    const valor = Number(pgtoValorInput.value) || 0;
+    if (taxa && valor > 0) {
+      const liquido = valor * (1 - taxa.taxaPercentual / 100);
+      pgtoPreview.textContent = `Taxa de ${taxa.taxaPercentual}% — valor líquido estimado: ${money(liquido)} (o pedido é quitado pelo valor cheio; a diferença vira uma saída "Taxa de cartão" no caixa)`;
+    } else {
+      pgtoPreview.textContent = '';
+    }
+  }
+  const atualizarFormaPgto = () => { atualizarFormaPagamentoPorConta(pgtoFormaSelect, contasCache.find(c => c.id === Number(pgtoContaSelect.value))); atualizarPreviewTaxa(); };
+  pgtoContaSelect.addEventListener('change', atualizarFormaPgto);
+  pgtoFormaSelect.addEventListener('change', atualizarPreviewTaxa);
+  pgtoParcelasSelect.addEventListener('change', atualizarPreviewTaxa);
+  pgtoValorInput.addEventListener('input', atualizarPreviewTaxa);
+  atualizarFormaPgto();
+
   document.getElementById('form-pagamento-pedido').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await apiPost(`/api/pedidos/${id}/pagamentos`, Object.fromEntries(fd.entries()));
+    const body = Object.fromEntries(fd.entries());
+    const comprovanteFile = document.getElementById('pgto-comprovante').files[0];
+    if (comprovanteFile) body.comprovanteBase64 = await fileToBase64(comprovanteFile);
+    await apiPost(`/api/pedidos/${id}/pagamentos`, body);
     toast('Pagamento registrado!');
     closeModal();
     load();
@@ -464,11 +549,14 @@ function renderPagamentosPedidos() {
     <tr>
       <td>#${p.id}</td>
       <td>${escapeHtml(p.cliente)}</td>
-      <td>${escapeHtml(pg.formaPagamento)}</td>
+      <td>${escapeHtml(pg.formaPagamento)}${pg.parcelasCartao > 1 ? ` ${pg.parcelasCartao}x` : ''}</td>
       <td>${escapeHtml(pg.contaId ? (contasCache.find(c => c.id === pg.contaId) || {}).nome || '—' : '—')}</td>
       <td class="muted">${fmtDate(pg.dataPagamento)}</td>
-      <td>${money(pg.valor)}</td>
-      <td><button class="small danger" onclick="desfazerPagamentoPedido(${p.id}, ${pg.id})">Desfazer pagamento</button></td>
+      <td>${money(pg.valor)}${pg.desconto ? ` <span class="muted">(+ ${money(pg.desconto)} desconto)</span>` : ''}${pg.taxaPercentual ? `<br><span class="muted">líquido ${money(pg.valorLiquido)} (taxa ${pg.taxaPercentual}%)</span>` : ''}</td>
+      <td>
+        ${pg.comprovante ? `<a href="${escapeAttr(pg.comprovante)}" target="_blank" rel="noopener" class="small secondary" style="display:inline-block;padding:5px 10px;margin-right:4px;text-decoration:none">📎 Comprovante</a>` : ''}
+        <button class="small danger" onclick="desfazerPagamentoPedido(${p.id}, ${pg.id})">Desfazer pagamento</button>
+      </td>
     </tr>
   `).join('') || '<tr><td colspan="7" class="muted">Nenhum pagamento registrado ainda.</td></tr>';
 }
@@ -564,8 +652,8 @@ document.getElementById('btn-limpar-filtro-pagamentos').addEventListener('click'
 });
 
 async function load() {
-  [contasCache, sociosCache, movimentacoesCache, pedidosCache, contasAPagarCache] = await Promise.all([
-    apiGet('/api/contas-financeiras'), apiGet('/api/socios'), apiGet('/api/movimentacoes-financeiras'), apiGet('/api/pedidos'), apiGet('/api/contas-a-pagar')
+  [contasCache, sociosCache, movimentacoesCache, pedidosCache, contasAPagarCache, taxasCartaoCache] = await Promise.all([
+    apiGet('/api/contas-financeiras'), apiGet('/api/socios'), apiGet('/api/movimentacoes-financeiras'), apiGet('/api/pedidos'), apiGet('/api/contas-a-pagar'), apiGet('/api/taxas-cartao')
   ]);
 
   document.getElementById('mov-forma').innerHTML = FORMA_PAGAMENTO.map(f => `<option value="${f}">${f}</option>`).join('');

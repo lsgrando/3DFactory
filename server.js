@@ -10,12 +10,15 @@ const {
   catalogoCores,
   movimentacoesEstoque,
   produtos,
+  categoriasProduto,
   variacoes,
   clientes,
   contasFinanceiras,
   socios,
+  taxasCartao,
   movimentacoesFinanceiras,
   pagamentosPedido,
+  despesasPedido,
   contasAPagar,
   parcelasContaAPagar,
   pedidos,
@@ -58,8 +61,28 @@ function limparTentativas(chave) {
 }
 
 const FORMA_PAGAMENTO = ['Pix', 'Dinheiro', 'Cartão de Crédito', 'Cartão de Débito'];
-const CATEGORIAS_SAIDA = ['Filamento', 'Material de embalagem', 'Despesas Gerais', 'Impressora 3D', 'Frete para cliente', 'Ferramentas de marketing', 'Anúncios pagos', 'Aluguel', 'Outro'];
+const CATEGORIAS_SAIDA = ['Filamento', 'Material de embalagem', 'Despesas Gerais', 'Impressora 3D', 'Frete para cliente', 'Ferramentas de marketing', 'Anúncios pagos', 'Aluguel', 'Taxa de cartão', 'Outro'];
 const CATEGORIAS_ENTRADA = ['Aporte de sócio', 'Outro'];
+
+// Dinheiro físico só entra/sai pela conta Caixa; toda conta que não é caixa (banco, carteira
+// digital) lida só com formas eletrônicas. Usado pra validar todo lançamento que tem conta +
+// forma de pagamento (evita registrar, por ex., um Pix caindo na conta "Caixa (dinheiro físico)").
+function formasPagamentoValidasParaConta(conta) {
+  if (!conta) return FORMA_PAGAMENTO;
+  return conta.tipo === 'caixa' ? ['Dinheiro'] : FORMA_PAGAMENTO.filter((f) => f !== 'Dinheiro');
+}
+function erroFormaPagamentoParaConta(conta) {
+  return `Forma de pagamento inválida para a conta "${conta.nome}" — use ${formasPagamentoValidasParaConta(conta).join(' ou ')}`;
+}
+
+// Taxa cadastrada em Taxas de Cartão pra essa forma de pagamento (débito é sempre 1 "parcela";
+// crédito varia por número de parcelas). Retorna null se não há taxa cadastrada — nesse caso o
+// pagamento é registrado sem desconto de taxa (nenhuma delas é obrigatória).
+function taxaCartaoDoPagamento(formaPagamento, parcelas) {
+  if (formaPagamento === 'Cartão de Débito') return taxasCartao.findByTipoParcelas('debito', 1);
+  if (formaPagamento === 'Cartão de Crédito') return taxasCartao.findByTipoParcelas('credito', parcelas || 1);
+  return null;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -70,7 +93,8 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
-  '.gif': 'image/gif'
+  '.gif': 'image/gif',
+  '.pdf': 'application/pdf'
 };
 
 function sendJSON(res, status, data, extraHeaders) {
@@ -264,6 +288,18 @@ function saveImagemBase64(dataUrl, filenameBase) {
   fs.writeFileSync(path.join(UPLOADS_DIR, filename), Buffer.from(match[2], 'base64'));
   return `/uploads/${filename}`;
 }
+// Comprovante de pagamento — igual a saveImagemBase64, mas também aceita PDF (comprovante de
+// banco costuma vir assim), usado ao registrar pagamento de pedido e parcela de conta a pagar.
+function saveComprovanteBase64(dataUrl, filenameBase) {
+  const match = /^data:(image\/(?:png|jpe?g|webp|gif)|application\/pdf);base64,(.+)$/.exec(dataUrl || '');
+  if (!match) return null;
+  const [tipo, subtipo] = match[1].split('/');
+  const ext = tipo === 'application' ? 'pdf' : (subtipo === 'jpeg' ? 'jpg' : subtipo);
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  const filename = `${filenameBase}.${ext}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, filename), Buffer.from(match[2], 'base64'));
+  return `/uploads/${filename}`;
+}
 function recomputeStatusProducao(pedido) {
   if (!['na_fila', 'imprimindo', 'concluido'].includes(pedido.status)) return;
   const statuses = pedido.itens.map((it) => it.status);
@@ -297,17 +333,23 @@ function estornarMovimentacao(movimentacaoId) {
   if (original.contaId) contasFinanceiras.ajustarSaldo(original.contaId, tipoInverso === 'entrada' ? estorno.valor : -estorno.valor);
   movimentacoesFinanceiras.marcarEstornado(original.id);
 }
-// Soma o preço dos itens já orçados de um pedido — fonte de verdade do valor total, usada tanto
-// pra validar pagamentos quanto pra decidir se o pedido já está totalmente pago.
+// Soma o preço dos itens já orçados de um pedido mais as despesas adicionais (embalagem, frete
+// etc.) ainda não estornadas — fonte de verdade do valor total, usada tanto pra validar
+// pagamentos quanto pra decidir se o pedido já está totalmente pago. As despesas entram no total
+// cobrado do cliente mas não aparecem detalhadas no orçamento impresso (ver orcamento-imprimir.html).
 function calcularValorPedido(pedido) {
-  return pedido.itens.reduce((s, it) => s + (it.orcamento ? it.orcamento.precoVenda * it.quantidade : 0), 0);
+  const totalItens = pedido.itens.reduce((s, it) => s + (it.orcamento ? it.orcamento.precoVenda * it.quantidade : 0), 0);
+  const totalDespesas = (pedido.despesasAdicionais || []).filter((d) => !d.estornado).reduce((s, d) => s + d.valor, 0);
+  return totalItens + totalDespesas;
 }
 // Recalcula pendente/parcial/pago a partir da soma dos pagamentos não estornados do pedido
-// e persiste. Chamado depois de qualquer registro ou estorno de pagamento.
+// (dinheiro recebido + desconto concedido, que também quita o saldo devedor) e persiste.
+// Chamado depois de qualquer registro ou estorno de pagamento.
 function recomputeStatusPagamento(pedido) {
   const total = calcularValorPedido(pedido);
-  const pago = pedido.pagamentos.filter((p) => !p.estornado).reduce((s, p) => s + p.valor, 0);
-  const status = pago <= 0.001 ? 'pendente' : pago >= total - 0.01 ? 'pago' : 'parcial';
+  const pagamentosAtivos = pedido.pagamentos.filter((p) => !p.estornado);
+  const quitado = pagamentosAtivos.reduce((s, p) => s + p.valor + (p.desconto || 0), 0);
+  const status = quitado <= 0.001 ? 'pendente' : quitado >= total - 0.01 ? 'pago' : 'parcial';
   pedido.statusPagamento = status;
   pedidos.update(pedido.id, { statusPagamento: status });
 }
@@ -315,7 +357,15 @@ function recomputeStatusPagamento(pedido) {
 function estornarTodosPagamentosDoPedido(pedido) {
   pedido.pagamentos.filter((p) => !p.estornado).forEach((p) => {
     estornarMovimentacao(p.movimentacaoFinanceiraId);
+    if (p.taxaMovimentacaoFinanceiraId) estornarMovimentacao(p.taxaMovimentacaoFinanceiraId);
     pagamentosPedido.marcarEstornado(p.id);
+  });
+}
+// Estorna todas as despesas adicionais ainda não estornadas de um pedido — usado ao excluir o pedido.
+function estornarTodasDespesasDoPedido(pedido) {
+  (pedido.despesasAdicionais || []).filter((d) => !d.estornado).forEach((d) => {
+    estornarMovimentacao(d.movimentacaoFinanceiraId);
+    despesasPedido.marcarEstornado(d.id);
   });
 }
 
@@ -508,6 +558,32 @@ async function api(req, res, pathname, query) {
       return sendJSON(res, 200, { ok: true });
     }
 
+    // ---------- CATEGORIAS DE PRODUTO ----------
+    if (parts[1] === 'categorias-produto' && parts.length === 2 && req.method === 'GET') {
+      return sendJSON(res, 200, categoriasProduto.all());
+    }
+    if (parts[1] === 'categorias-produto' && parts.length === 2 && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body.nome || !body.nome.trim()) return sendJSON(res, 400, { error: 'Nome da categoria é obrigatório' });
+      return sendJSON(res, 201, categoriasProduto.insert({ nome: body.nome.trim() }));
+    }
+    if (parts[1] === 'categorias-produto' && parts.length === 3 && req.method === 'PATCH') {
+      const categoria = categoriasProduto.findById(parts[2]);
+      if (!categoria) return sendJSON(res, 404, { error: 'Categoria não encontrada' });
+      const body = await readBody(req);
+      if (!body.nome || !body.nome.trim()) return sendJSON(res, 400, { error: 'Nome da categoria é obrigatório' });
+      return sendJSON(res, 200, categoriasProduto.update(categoria.id, { nome: body.nome.trim() }));
+    }
+    if (parts[1] === 'categorias-produto' && parts.length === 3 && req.method === 'DELETE') {
+      const categoria = categoriasProduto.findById(parts[2]);
+      if (!categoria) return sendJSON(res, 404, { error: 'Categoria não encontrada' });
+      if (produtos.existeParaCategoria(categoria.id)) {
+        return sendJSON(res, 400, { error: 'Existem produtos nessa categoria — mude a categoria deles antes de excluir.' });
+      }
+      categoriasProduto.remove(categoria.id);
+      return sendJSON(res, 200, { ok: true });
+    }
+
     // ---------- PRODUTOS ----------
     if (parts[1] === 'produtos' && parts.length === 2 && req.method === 'GET') {
       return sendJSON(res, 200, produtos.all());
@@ -521,6 +597,7 @@ async function api(req, res, pathname, query) {
         corFilamento: body.corFilamento || '',
         modeloRef: body.modeloRef || '',
         imagem: null,
+        categoriaId: body.categoriaId || null,
         createdAt: new Date().toISOString()
       });
       if (body.imagemBase64) {
@@ -536,6 +613,16 @@ async function api(req, res, pathname, query) {
       if (body.imagemBase64) body.imagem = saveImagemBase64(body.imagemBase64, `produto-${produto.id}`);
       delete body.imagemBase64;
       return sendJSON(res, 200, produtos.update(produto.id, body));
+    }
+    if (parts[1] === 'produtos' && parts.length === 3 && req.method === 'DELETE') {
+      const produto = produtos.findById(parts[2]);
+      if (!produto) return sendJSON(res, 404, { error: 'Produto não encontrado' });
+      if (itens.existeParaProduto(produto.id)) {
+        return sendJSON(res, 400, { error: 'Este produto já foi usado em pedidos — desative-o em vez de excluir.' });
+      }
+      variacoes.removePorProduto(produto.id);
+      produtos.remove(produto.id);
+      return sendJSON(res, 200, { ok: true });
     }
 
     // ---------- VARIAÇÕES ----------
@@ -620,6 +707,32 @@ async function api(req, res, pathname, query) {
       return sendJSON(res, 200, contasFinanceiras.update(conta.id, patch));
     }
 
+    // ---------- TAXAS DE CARTÃO ----------
+    if (parts[1] === 'taxas-cartao' && parts.length === 2 && req.method === 'GET') {
+      return sendJSON(res, 200, taxasCartao.all());
+    }
+    if (parts[1] === 'taxas-cartao' && parts.length === 2 && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body.tipo !== 'debito' && body.tipo !== 'credito') {
+        return sendJSON(res, 400, { error: 'Tipo inválido — use débito ou crédito' });
+      }
+      const parcelas = body.tipo === 'debito' ? 1 : Number(body.parcelas);
+      if (!Number.isInteger(parcelas) || parcelas < 1) {
+        return sendJSON(res, 400, { error: 'Número de parcelas inválido' });
+      }
+      const taxaPercentual = Number(body.taxaPercentual);
+      if (!Number.isFinite(taxaPercentual) || taxaPercentual < 0) {
+        return sendJSON(res, 400, { error: 'Taxa inválida' });
+      }
+      return sendJSON(res, 201, taxasCartao.upsert({ tipo: body.tipo, parcelas, taxaPercentual }));
+    }
+    if (parts[1] === 'taxas-cartao' && parts.length === 3 && req.method === 'DELETE') {
+      const taxa = taxasCartao.findById(parts[2]);
+      if (!taxa) return sendJSON(res, 404, { error: 'Taxa não encontrada' });
+      taxasCartao.remove(taxa.id);
+      return sendJSON(res, 200, { ok: true });
+    }
+
     // ---------- SÓCIOS ----------
     if (parts[1] === 'socios' && parts.length === 2 && req.method === 'GET') {
       return sendJSON(res, 200, socios.all());
@@ -667,6 +780,9 @@ async function api(req, res, pathname, query) {
       }
       const conta = body.contaId ? contasFinanceiras.findById(body.contaId) : null;
       if (body.contaId && !conta) return sendJSON(res, 400, { error: 'Conta inválida' });
+      if (conta && !formasPagamentoValidasParaConta(conta).includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: erroFormaPagamentoParaConta(conta) });
+      }
       const socio = responsavelId ? socios.findById(responsavelId) : null;
       if (responsavelId && !socio) return sendJSON(res, 400, { error: 'Sócio inválido' });
 
@@ -790,6 +906,9 @@ async function api(req, res, pathname, query) {
       if (!FORMA_PAGAMENTO.includes(body.formaPagamento)) {
         return sendJSON(res, 400, { error: 'Forma de pagamento inválida' });
       }
+      if (!formasPagamentoValidasParaConta(contaFinanceira).includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: erroFormaPagamentoParaConta(contaFinanceira) });
+      }
       const data = body.data ? new Date(body.data).toISOString() : new Date().toISOString();
       const mov = movimentacoesFinanceiras.insert({
         tipo: 'saida',
@@ -809,7 +928,8 @@ async function api(req, res, pathname, query) {
         criadoEm: new Date().toISOString()
       });
       contasFinanceiras.ajustarSaldo(contaFinanceira.id, -parcela.valor);
-      parcelasContaAPagar.marcarPaga(parcela.id, { movimentacaoFinanceiraId: mov.id, dataPagamento: data });
+      const comprovante = body.comprovanteBase64 ? saveComprovanteBase64(body.comprovanteBase64, `comprovante-parcela-${parcela.id}-${Date.now()}`) : null;
+      parcelasContaAPagar.marcarPaga(parcela.id, { movimentacaoFinanceiraId: mov.id, dataPagamento: data, comprovante });
       return sendJSON(res, 200, contasAPagar.findById(conta.id));
     }
 
@@ -876,6 +996,9 @@ async function api(req, res, pathname, query) {
       if (!conta) return sendJSON(res, 400, { error: 'Conta inválida' });
       if (!FORMA_PAGAMENTO.includes(body.formaPagamento)) {
         return sendJSON(res, 400, { error: 'Forma de pagamento inválida' });
+      }
+      if (!formasPagamentoValidasParaConta(conta).includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: erroFormaPagamentoParaConta(conta) });
       }
       const ids = Array.isArray(body.movimentacaoIds) ? body.movimentacaoIds.map(Number) : [];
       const pendencias = movimentacoesFinanceiras.pendenciasSocio(socio.id, ids);
@@ -979,6 +1102,7 @@ async function api(req, res, pathname, query) {
       if (!pedido) return sendJSON(res, 404, { error: 'Pedido não encontrado' });
 
       estornarTodosPagamentosDoPedido(pedido);
+      estornarTodasDespesasDoPedido(pedido);
 
       pedido.itens.forEach((item) => {
         if (item.status === 'concluido' && item.orcamento) {
@@ -1236,18 +1360,32 @@ async function api(req, res, pathname, query) {
       if (!FORMA_PAGAMENTO.includes(body.formaPagamento)) {
         return sendJSON(res, 400, { error: 'Forma de pagamento inválida' });
       }
+      if (!formasPagamentoValidasParaConta(conta).includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: erroFormaPagamentoParaConta(conta) });
+      }
       const valor = Number(body.valor);
       if (!valor || valor <= 0) {
         return sendJSON(res, 400, { error: 'Valor inválido' });
       }
+      const desconto = Number(body.desconto || 0);
+      if (desconto < 0) return sendJSON(res, 400, { error: 'Desconto inválido' });
       const totalPedido = calcularValorPedido(pedido);
-      const jaPago = pedido.pagamentos.filter((p) => !p.estornado).reduce((s, p) => s + p.valor, 0);
-      const saldoDevedor = totalPedido - jaPago;
-      if (valor > saldoDevedor + 0.01) {
-        return sendJSON(res, 400, { error: `Valor maior que o saldo devedor (R$ ${saldoDevedor.toFixed(2)})` });
+      const pagamentosAtivos = pedido.pagamentos.filter((p) => !p.estornado);
+      const jaPago = pagamentosAtivos.reduce((s, p) => s + p.valor, 0);
+      const jaDesconto = pagamentosAtivos.reduce((s, p) => s + (p.desconto || 0), 0);
+      const saldoDevedor = totalPedido - jaPago - jaDesconto;
+      if (valor + desconto > saldoDevedor + 0.01) {
+        return sendJSON(res, 400, { error: `Valor + desconto maior que o saldo devedor (R$ ${saldoDevedor.toFixed(2)})` });
       }
 
+      const parcelasCartao = body.formaPagamento === 'Cartão de Crédito' ? Number(body.parcelasCartao || 1) : null;
+      const taxa = taxaCartaoDoPagamento(body.formaPagamento, parcelasCartao);
+      const round2 = (n) => Math.round(n * 100) / 100;
+      const taxaValor = taxa ? round2(valor * (taxa.taxaPercentual / 100)) : 0;
+      const valorLiquido = taxa ? round2(valor - taxaValor) : valor;
+
       const dataPagamento = body.data ? new Date(body.data).toISOString() : new Date().toISOString();
+      const comprovante = body.comprovanteBase64 ? saveComprovanteBase64(body.comprovanteBase64, `comprovante-pedido-${pedido.id}-${Date.now()}`) : null;
       const mov = movimentacoesFinanceiras.insert({
         tipo: 'entrada',
         valor,
@@ -1266,13 +1404,45 @@ async function api(req, res, pathname, query) {
         criadoEm: new Date().toISOString()
       });
       contasFinanceiras.ajustarSaldo(conta.id, valor);
+
+      // Taxa de cartão: o cliente pagou o valor cheio (é o que quita a dívida do pedido), mas só
+      // o valor líquido cai de fato na conta — a diferença vira uma saída separada, pra bater
+      // com o extrato do banco/maquininha sem distorcer o total de "Venda" nos relatórios.
+      let taxaMov = null;
+      if (taxaValor > 0) {
+        taxaMov = movimentacoesFinanceiras.insert({
+          tipo: 'saida',
+          valor: taxaValor,
+          contaId: conta.id,
+          formaPagamento: body.formaPagamento,
+          categoria: 'Taxa de cartão',
+          categoriaDetalhe: null,
+          descricao: `Taxa de cartão (${body.formaPagamento}${parcelasCartao > 1 ? ` ${parcelasCartao}x` : ''}, ${taxa.taxaPercentual}%) — pedido #${pedido.id}`,
+          pedidoId: pedido.id,
+          responsavelId: null,
+          reembolsado: false,
+          reembolsoId: null,
+          estornado: false,
+          estornoDe: null,
+          data: dataPagamento,
+          criadoEm: new Date().toISOString()
+        });
+        contasFinanceiras.ajustarSaldo(conta.id, -taxaValor);
+      }
+
       pagamentosPedido.insert({
         pedidoId: pedido.id,
         valor,
+        desconto,
         formaPagamento: body.formaPagamento,
         contaId: conta.id,
         movimentacaoFinanceiraId: mov.id,
-        dataPagamento
+        dataPagamento,
+        comprovante,
+        parcelasCartao,
+        taxaPercentual: taxa ? taxa.taxaPercentual : null,
+        valorLiquido,
+        taxaMovimentacaoFinanceiraId: taxaMov ? taxaMov.id : null
       });
 
       const pedidoAtualizado = pedidos.findById(pedido.id);
@@ -1288,10 +1458,95 @@ async function api(req, res, pathname, query) {
       if (pagamento.estornado) return sendJSON(res, 400, { error: 'Pagamento já estornado' });
 
       estornarMovimentacao(pagamento.movimentacaoFinanceiraId);
+      if (pagamento.taxaMovimentacaoFinanceiraId) estornarMovimentacao(pagamento.taxaMovimentacaoFinanceiraId);
       pagamentosPedido.marcarEstornado(pagamento.id);
 
       const pedidoAtualizado = pedidos.findById(pedido.id);
       recomputeStatusPagamento(pedidoAtualizado);
+      return sendJSON(res, 200, pedidos.findById(pedido.id));
+    }
+
+    // Despesas adicionais do pedido (embalagem, frete etc.) — somam ao valor cobrado do cliente
+    // e geram uma saída no Financeiro vinculada ao pedido, mas não aparecem detalhadas no
+    // orçamento impresso (só o total final, ver orcamento-imprimir.html).
+    if (parts[1] === 'pedidos' && parts[3] === 'despesas' && parts.length === 4 && req.method === 'POST') {
+      const pedido = pedidos.findById(parts[2]);
+      if (!pedido) return sendJSON(res, 404, { error: 'Pedido não encontrado' });
+      if (pedidoTemPagamentoAtivo(pedido)) return sendJSON(res, 400, { error: ERRO_PAGAMENTO_ATIVO });
+      const body = await readBody(req);
+      const valor = Number(body.valor);
+      if (!valor || valor <= 0) return sendJSON(res, 400, { error: 'Valor inválido' });
+      if (!CATEGORIAS_SAIDA.includes(body.categoria)) {
+        return sendJSON(res, 400, { error: 'Categoria inválida' });
+      }
+      if (body.categoria === 'Outro' && !body.categoriaDetalhe) {
+        return sendJSON(res, 400, { error: 'Descreva a categoria em "Outro"' });
+      }
+      if (!FORMA_PAGAMENTO.includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: 'Forma de pagamento inválida' });
+      }
+      const responsavelId = body.responsavelId ? Number(body.responsavelId) : null;
+      if (responsavelId && body.contaId) {
+        return sendJSON(res, 400, { error: 'Despesa paga por sócio não deve informar conta — vira dívida da empresa com o sócio até o reembolso' });
+      }
+      if (!responsavelId && !body.contaId) {
+        return sendJSON(res, 400, { error: 'Informe a conta ou o sócio responsável pelo pagamento' });
+      }
+      const conta = body.contaId ? contasFinanceiras.findById(body.contaId) : null;
+      if (body.contaId && !conta) return sendJSON(res, 400, { error: 'Conta inválida' });
+      if (conta && !formasPagamentoValidasParaConta(conta).includes(body.formaPagamento)) {
+        return sendJSON(res, 400, { error: erroFormaPagamentoParaConta(conta) });
+      }
+      const socio = responsavelId ? socios.findById(responsavelId) : null;
+      if (responsavelId && !socio) return sendJSON(res, 400, { error: 'Sócio inválido' });
+
+      const categoriaDetalhe = body.categoria === 'Outro' ? body.categoriaDetalhe : null;
+      const mov = movimentacoesFinanceiras.insert({
+        tipo: 'saida',
+        valor,
+        contaId: conta ? conta.id : null,
+        formaPagamento: body.formaPagamento,
+        categoria: body.categoria,
+        categoriaDetalhe,
+        descricao: body.descricao || `Despesa adicional — pedido #${pedido.id} (${pedido.cliente})`,
+        pedidoId: pedido.id,
+        responsavelId: socio ? socio.id : null,
+        reembolsado: false,
+        reembolsoId: null,
+        estornado: false,
+        estornoDe: null,
+        data: new Date().toISOString(),
+        criadoEm: new Date().toISOString()
+      });
+      if (conta) contasFinanceiras.ajustarSaldo(conta.id, -valor);
+
+      despesasPedido.insert({
+        pedidoId: pedido.id,
+        descricao: body.descricao || '',
+        categoria: body.categoria,
+        categoriaDetalhe,
+        valor,
+        formaPagamento: body.formaPagamento,
+        contaId: conta ? conta.id : null,
+        responsavelId: socio ? socio.id : null,
+        movimentacaoFinanceiraId: mov.id,
+        criadoEm: new Date().toISOString()
+      });
+
+      return sendJSON(res, 201, pedidos.findById(pedido.id));
+    }
+
+    if (parts[1] === 'pedidos' && parts[3] === 'despesas' && parts.length === 5 && req.method === 'DELETE') {
+      const pedido = pedidos.findById(parts[2]);
+      if (!pedido) return sendJSON(res, 404, { error: 'Pedido não encontrado' });
+      const despesa = (pedido.despesasAdicionais || []).find((d) => d.id === Number(parts[4]));
+      if (!despesa) return sendJSON(res, 404, { error: 'Despesa não encontrada' });
+      if (despesa.estornado) return sendJSON(res, 400, { error: 'Despesa já estornada' });
+      if (pedidoTemPagamentoAtivo(pedido)) return sendJSON(res, 400, { error: ERRO_PAGAMENTO_ATIVO });
+
+      estornarMovimentacao(despesa.movimentacaoFinanceiraId);
+      despesasPedido.marcarEstornado(despesa.id);
+
       return sendJSON(res, 200, pedidos.findById(pedido.id));
     }
 

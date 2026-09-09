@@ -36,10 +36,20 @@
   .doc-header .meta { text-align: right; }
   .doc-header .meta h1 { margin: 0; font-size: 22px; color: #6b4a36; letter-spacing: .02em; }
   .doc-header .meta .num { font-size: 13px; color: #8a7a6c; margin-top: 4px; }
+  .catalogo-categoria-titulo {
+    font-size: 16px;
+    color: #6b4a36;
+    border-bottom: 1px solid #e6d9cd;
+    padding-bottom: 6px;
+    margin: 28px 0 14px;
+    break-after: avoid;
+  }
+  .catalogo-categoria-titulo:first-of-type { margin-top: 0; }
   .catalogo-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 18px;
+    margin-bottom: 10px;
   }
   .produto-card-print {
     border: 1px solid #e6d9cd;
@@ -169,10 +179,10 @@ function precoLinha(nome, preco) {
 
 async function load() {
   const sheet = document.getElementById('sheet');
-  let produtos, variacoesTodas, filamentos, impressoras, params, pedidos;
+  let produtos, categorias, variacoesTodas, filamentos, impressoras, params, pedidos;
   try {
-    [produtos, variacoesTodas, filamentos, impressoras, params, pedidos] = await Promise.all([
-      apiGet('/api/produtos'), apiGet('/api/variacoes'), apiGet('/api/filamentos'),
+    [produtos, categorias, variacoesTodas, filamentos, impressoras, params, pedidos] = await Promise.all([
+      apiGet('/api/produtos'), apiGet('/api/categorias-produto'), apiGet('/api/variacoes'), apiGet('/api/filamentos'),
       apiGet('/api/impressoras'), apiGet('/api/params'), apiGet('/api/pedidos')
     ]);
   } catch (e) {
@@ -180,7 +190,8 @@ async function load() {
     return;
   }
 
-  if (!produtos.length) {
+  const produtosAtivos = produtos.filter((p) => p.ativo !== false);
+  if (!produtosAtivos.length) {
     sheet.innerHTML = '<p class="doc-erro">Nenhum produto cadastrado ainda.</p>';
     return;
   }
@@ -188,38 +199,58 @@ async function load() {
   const tarifaKwh = params.tarifaKwh || 0;
   const hoje = new Date().toLocaleDateString('pt-BR');
 
-  const cards = produtos
-    .slice()
-    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
-    .map((produto) => {
-      const variacoesDoProduto = variacoesTodas.filter((v) => v.produtoId === produto.id);
-      const { venda: vendaDescricao, custo: custoDescricao, ehMetadados } = extrairDoDescricao(produto.descricao);
-      const descricaoExibivel = ehMetadados ? '' : produto.descricao;
+  function cardHtml(produto) {
+    const variacoesDoProduto = variacoesTodas.filter((v) => v.produtoId === produto.id);
+    const { venda: vendaDescricao, custo: custoDescricao, ehMetadados } = extrairDoDescricao(produto.descricao);
+    const descricaoExibivel = ehMetadados ? '' : produto.descricao;
 
-      let linhasPreco;
-      if (variacoesDoProduto.length) {
-        linhasPreco = variacoesDoProduto.map((v) => {
-          if (v.precoVenda != null) return precoLinha(v.nome, v.precoVenda);
-          const hist = precoHistorico(pedidos, produto.id, v.nome);
-          if (hist != null) return precoLinha(v.nome, hist);
-          const custo = custoVariacao(v, filamentos, impressoras, tarifaKwh);
-          return precoLinha(v.nome, custo != null ? custo * MARGEM_PADRAO_CATALOGO : null);
-        }).join('');
-      } else {
-        let preco = precoHistorico(pedidos, produto.id, '');
-        if (preco == null) preco = vendaDescricao;
-        if (preco == null && custoDescricao != null) preco = custoDescricao * MARGEM_PADRAO_CATALOGO;
-        linhasPreco = precoLinha(null, preco);
-      }
+    let linhasPreco;
+    if (variacoesDoProduto.length) {
+      linhasPreco = variacoesDoProduto.map((v) => {
+        if (v.precoVenda != null) return precoLinha(v.nome, v.precoVenda);
+        const hist = precoHistorico(pedidos, produto.id, v.nome);
+        if (hist != null) return precoLinha(v.nome, hist);
+        const custo = custoVariacao(v, filamentos, impressoras, tarifaKwh);
+        return precoLinha(v.nome, custo != null ? custo * MARGEM_PADRAO_CATALOGO : null);
+      }).join('');
+    } else {
+      let preco = precoHistorico(pedidos, produto.id, '');
+      if (preco == null) preco = vendaDescricao;
+      if (preco == null && custoDescricao != null) preco = custoDescricao * MARGEM_PADRAO_CATALOGO;
+      linhasPreco = precoLinha(null, preco);
+    }
 
+    return `
+      <div class="produto-card-print">
+        ${produto.imagem ? `<img src="${escapeAttr(produto.imagem)}" alt="${escapeHtml(produto.nome)}" />` : '<div class="sem-imagem">sem imagem</div>'}
+        <h3>${escapeHtml(produto.nome)}</h3>
+        ${produto.dimensoes ? `<div class="dims">${escapeHtml(produto.dimensoes)}</div>` : ''}
+        ${descricaoExibivel ? `<div class="desc">${escapeHtml(descricaoExibivel)}</div>` : ''}
+        <div class="precos">${linhasPreco}</div>
+      </div>
+    `;
+  }
+
+  // Agrupa por categoria (ordem alfabética, "Sem categoria" sempre por último) e ordena os
+  // produtos dentro de cada grupo por nome — deixa o catálogo impresso organizado por seção.
+  const nomeCategoria = (categoriaId) => {
+    const c = categoriaId ? categorias.find((x) => x.id === categoriaId) : null;
+    return c ? c.nome : null;
+  };
+  const grupos = new Map();
+  produtosAtivos.forEach((p) => {
+    const nome = nomeCategoria(p.categoriaId);
+    const chave = nome || '￿ Sem categoria'; // ￿ garante que "Sem categoria" ordene por último
+    if (!grupos.has(chave)) grupos.set(chave, { titulo: nome || 'Sem categoria', produtos: [] });
+    grupos.get(chave).produtos.push(p);
+  });
+  const secoes = [...grupos.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, 'pt-BR'))
+    .map(([, grupo]) => {
+      const cards = grupo.produtos.slice().sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')).map(cardHtml).join('');
       return `
-        <div class="produto-card-print">
-          ${produto.imagem ? `<img src="${escapeAttr(produto.imagem)}" alt="${escapeHtml(produto.nome)}" />` : '<div class="sem-imagem">sem imagem</div>'}
-          <h3>${escapeHtml(produto.nome)}</h3>
-          ${produto.dimensoes ? `<div class="dims">${escapeHtml(produto.dimensoes)}</div>` : ''}
-          ${descricaoExibivel ? `<div class="desc">${escapeHtml(descricaoExibivel)}</div>` : ''}
-          <div class="precos">${linhasPreco}</div>
-        </div>
+        ${grupos.size > 1 ? `<h2 class="catalogo-categoria-titulo">${escapeHtml(grupo.titulo)}</h2>` : ''}
+        <div class="catalogo-grid">${cards}</div>
       `;
     }).join('');
 
@@ -228,11 +259,11 @@ async function load() {
       <img src="assets/logo-atelie.jpeg" alt="Ateliê 3D Home" />
       <div class="meta">
         <h1>Catálogo de Produtos</h1>
-        <div class="num">${produtos.length} produto(s) &middot; ${hoje}</div>
+        <div class="num">${produtosAtivos.length} produto(s) &middot; ${hoje}</div>
       </div>
     </div>
 
-    <div class="catalogo-grid">${cards}</div>
+    ${secoes}
 
     <div class="doc-footer">
       Ateliê 3D Home &nbsp;·&nbsp;

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Taxas de Cartão — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Taxas de Cartão</h1>
+  <p class="subtitle">Taxa cobrada pela maquininha/gateway em cada venda no cartão — usada pra calcular o valor líquido que cai na conta ao registrar um pagamento de pedido.</p>
+
+  <h2>Débito</h2>
+  <div class="card">
+    <form class="inline" id="form-debito">
+      <div class="field"><label>Taxa (%)</label><input name="taxaPercentual" type="number" step="0.01" min="0" required /></div>
+      <button type="submit">Salvar</button>
+    </form>
+  </div>
+
+  <h2>Crédito (por parcela)</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Parcelas</th><th>Taxa (%)</th><th>Ações</th></tr></thead>
+      <tbody id="tbody-credito"></tbody>
+    </table>
+    <form class="inline" id="form-credito" style="margin-top:14px">
+      <div class="field"><label>Parcelas</label><input name="parcelas" type="number" step="1" min="1" value="1" required /></div>
+      <div class="field"><label>Taxa (%)</label><input name="taxaPercentual" type="number" step="0.01" min="0" required /></div>
+      <button type="submit">+ Adicionar / atualizar parcela</button>
+    </form>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderNav('taxas-cartao.html');
+let taxasCache = [];
+
+function debito() {
+  return taxasCache.find((t) => t.tipo === 'debito');
+}
+function creditos() {
+  return taxasCache.filter((t) => t.tipo === 'credito').sort((a, b) => a.parcelas - b.parcelas);
+}
+
+function render() {
+  const d = debito();
+  document.querySelector('#form-debito [name="taxaPercentual"]').value = d ? d.taxaPercentual : '';
+
+  document.getElementById('tbody-credito').innerHTML = creditos().map((t) => `
+    <tr>
+      <td>${t.parcelas}x</td>
+      <td>${t.taxaPercentual}%</td>
+      <td><button type="button" class="small danger" onclick="removerTaxa(${t.id})">Remover</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="3" class="muted">Nenhuma taxa de crédito cadastrada.</td></tr>';
+}
+
+document.getElementById('form-debito').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  await apiPost('/api/taxas-cartao', { tipo: 'debito', parcelas: 1, taxaPercentual: fd.get('taxaPercentual') });
+  toast('Taxa de débito salva!');
+  load();
+});
+
+document.getElementById('form-credito').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  await apiPost('/api/taxas-cartao', { tipo: 'credito', parcelas: fd.get('parcelas'), taxaPercentual: fd.get('taxaPercentual') });
+  toast('Taxa de crédito salva!');
+  e.target.reset();
+  document.querySelector('#form-credito [name="parcelas"]').value = 1;
+  load();
+});
+
+async function removerTaxa(id) {
+  if (!confirm('Remover esta taxa? Pagamentos já registrados não são afetados.')) return;
+  await apiDelete(`/api/taxas-cartao/${id}`);
+  toast('Taxa removida.');
+  load();
+}
+window.removerTaxa = removerTaxa;
+
+async function load() {
+  taxasCache = await apiGet('/api/taxas-cartao');
+  render();
+}
+load();
+</script>
+</body>
+</html>

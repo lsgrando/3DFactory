@@ -119,7 +119,7 @@ async function load() {
     return;
   }
 
-  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0);
+  const total = orcados.reduce((s, it) => s + it.orcamento.precoVenda * it.quantidade, 0) + totalDespesasPedido(pedido);
   const validades = orcados.map((it) => it.orcamento.validadeOrcamento).filter(Boolean).sort();
   const validade = validades[0] || null;
   const hoje = new Date().toLocaleDateString('pt-BR');

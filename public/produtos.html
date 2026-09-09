@@ -34,6 +34,7 @@
 renderNav('produtos.html');
 let produtosCache = [];
 let filamentosCache = [];
+let categoriasCache = [];
 let impressorasCache = [];
 let paramsCache = {};
 let imagemBase64Atual = null;
@@ -166,6 +167,12 @@ function formProduto(titulo, valores, onSubmit) {
       <div class="field" style="min-width:100%"><label>Nome do produto</label><input name="nome" value="${escapeAttr(valores.nome)}" required /></div>
       <div class="field" style="min-width:100%"><label>Descrição</label><textarea name="descricao" placeholder="Detalhes do produto">${escapeHtml(valores.descricao || '')}</textarea></div>
       <div class="field"><label>Dimensões padrão (mm)</label><input name="dimensoes" value="${escapeAttr(valores.dimensoes)}" placeholder="ex: 100x50x30" /></div>
+      <div class="field"><label>Categoria</label>
+        <select name="categoriaId">
+          <option value="">— Sem categoria —</option>
+          ${categoriasCache.map((c) => `<option value="${c.id}" ${valores.categoriaId === c.id ? 'selected' : ''}>${escapeHtml(c.nome)}</option>`).join('')}
+        </select>
+      </div>
       <div class="field" style="min-width:100%"><label>Link do modelo (Makerworld etc.)</label><input name="modeloRef" value="${escapeAttr(valores.modeloRef)}" placeholder="https://..." /></div>
       <div class="field" style="min-width:100%">
         <label>Imagem</label>
@@ -236,22 +243,53 @@ function abrirEdicaoProduto(id) {
 }
 window.abrirEdicaoProduto = abrirEdicaoProduto;
 
+function nomeCategoria(categoriaId) {
+  const c = categoriaId ? categoriasCache.find((x) => x.id === categoriaId) : null;
+  return c ? c.nome : 'Sem categoria';
+}
+
 function render() {
   const termo = document.getElementById('busca').value.trim().toLowerCase();
-  const lista = !termo ? produtosCache : produtosCache.filter((p) => p.nome.toLowerCase().includes(termo));
+  const lista = (!termo ? produtosCache : produtosCache.filter((p) => p.nome.toLowerCase().includes(termo)))
+    .slice()
+    .sort((a, b) => nomeCategoria(a.categoriaId).localeCompare(nomeCategoria(b.categoriaId), 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR'));
   document.getElementById('grid').innerHTML = lista.length ? lista.map(p => `
-    <div class="produto-card clickable" onclick="abrirEdicaoProduto(${p.id})">
-      ${p.imagem ? `<img class="thumb-lg" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
-      <h4>${escapeHtml(p.nome)}</h4>
-      <div class="muted">${escapeHtml(p.dimensoes || '—')}</div>
+    <div class="produto-card" style="${p.ativo === false ? 'opacity:.55' : ''}">
+      <div class="clickable" style="cursor:pointer" onclick="abrirEdicaoProduto(${p.id})">
+        ${p.imagem ? `<img class="thumb-lg" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
+        <h4>${escapeHtml(p.nome)}</h4>
+        <div class="muted">${escapeHtml(nomeCategoria(p.categoriaId))} · ${escapeHtml(p.dimensoes || '—')}${p.ativo === false ? ' · Desativado' : ''}</div>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button type="button" class="small secondary" onclick="event.stopPropagation(); alternarAtivoProduto(${p.id}, ${p.ativo === false})">${p.ativo === false ? 'Reativar' : 'Desativar'}</button>
+        <button type="button" class="small danger" onclick="event.stopPropagation(); excluirProduto(${p.id})">Excluir</button>
+      </div>
     </div>
   `).join('') : '<p class="muted">Nenhum produto encontrado.</p>';
 }
 document.getElementById('busca').addEventListener('input', render);
 
+// Desativar tira o produto da seleção de novos pedidos (Vendas) e do catálogo exportado em PDF,
+// mas mantém o cadastro intacto — pedidos antigos que já usaram esse produto continuam normais,
+// já que cada item de pedido guarda sua própria cópia de descrição/imagem, não uma referência viva.
+async function alternarAtivoProduto(id, ativar) {
+  await apiPatch(`/api/produtos/${id}`, { ativo: ativar });
+  toast(ativar ? 'Produto reativado.' : 'Produto desativado.');
+  load();
+}
+window.alternarAtivoProduto = alternarAtivoProduto;
+
+async function excluirProduto(id) {
+  if (!confirm('Excluir este produto definitivamente? Essa ação não pode ser desfeita.')) return;
+  await apiDelete(`/api/produtos/${id}`);
+  toast('Produto excluído.');
+  load();
+}
+window.excluirProduto = excluirProduto;
+
 async function load() {
-  [filamentosCache, impressorasCache, produtosCache, paramsCache] = await Promise.all([
-    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/produtos'), apiGet('/api/params')
+  [filamentosCache, impressorasCache, produtosCache, paramsCache, categoriasCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/produtos'), apiGet('/api/params'), apiGet('/api/categorias-produto')
   ]);
   render();
 }

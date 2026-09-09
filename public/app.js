@@ -146,6 +146,12 @@ function somaPesoOrcamento(orcamento) {
   return filamentosDoOrcamento(orcamento).reduce((s, f) => s + Number(f.pesoGramas || 0), 0);
 }
 
+// Soma das despesas adicionais (embalagem, frete etc.) ainda não estornadas de um pedido —
+// entram no valor total cobrado do cliente, mas não aparecem detalhadas no orçamento impresso.
+function totalDespesasPedido(p) {
+  return (p.despesasAdicionais || []).filter((d) => !d.estornado).reduce((s, d) => s + d.valor, 0);
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -302,7 +308,9 @@ const NAV_ITEMS = [
       { href: 'filamentos.html', label: 'Filamentos' },
       { href: 'catalogo-cores.html', label: 'Catálogo de Cores' },
       { href: 'clientes.html', label: 'Clientes' },
+      { href: 'categorias.html', label: 'Categorias de Produto' },
       { href: 'contas-financeiras.html', label: 'Contas Financeiras' },
+      { href: 'taxas-cartao.html', label: 'Taxas de Cartão' },
       { href: 'socios.html', label: 'Sócios' },
       { href: 'usuarios.html', label: 'Usuários' }
     ]
@@ -311,6 +319,21 @@ const NAV_ITEMS = [
 
 const FORMA_PAGAMENTO = ['Pix', 'Dinheiro', 'Cartão de Crédito', 'Cartão de Débito'];
 const CATEGORIAS_SAIDA = ['Filamento', 'Material de embalagem', 'Despesas Gerais', 'Impressora 3D', 'Frete para cliente', 'Ferramentas de marketing', 'Anúncios pagos', 'Aluguel', 'Outro'];
+
+// Dinheiro físico só entra/sai pela conta Caixa; toda conta que não é caixa (banco, carteira
+// digital) lida só com formas eletrônicas. Mesma regra aplicada no servidor (server.js).
+function formasPagamentoDaConta(conta) {
+  if (!conta) return FORMA_PAGAMENTO;
+  return conta.tipo === 'caixa' ? ['Dinheiro'] : FORMA_PAGAMENTO.filter((f) => f !== 'Dinheiro');
+}
+// Repopula um <select> de forma de pagamento com só as opções válidas pra conta escolhida,
+// preservando o valor atual se ele continuar sendo uma opção válida.
+function atualizarFormaPagamentoPorConta(selectFormaEl, conta) {
+  const atual = selectFormaEl.value;
+  const formas = formasPagamentoDaConta(conta);
+  selectFormaEl.innerHTML = formas.map((f) => `<option value="${f}">${f}</option>`).join('');
+  if (formas.includes(atual)) selectFormaEl.value = atual;
+}
 const CATEGORIAS_ENTRADA = ['Aporte de sócio', 'Outro'];
 
 function renderNavItem(it, active) {

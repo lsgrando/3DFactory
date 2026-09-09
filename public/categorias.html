@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Categorias de Produto — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Categorias de Produto</h1>
+  <p class="subtitle">Usadas pra classificar os produtos e organizar o catálogo exportado em PDF.</p>
+
+  <div class="toolbar">
+    <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <button type="button" onclick="abrirNovaCategoria()">+ Nova categoria</button>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Nome</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div id="modal-bg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+  <div class="modal-wrap" style="width:380px;max-width:92vw;">
+    <button type="button" class="modal-close" onclick="closeModal()" aria-label="Fechar">&times;</button>
+    <div class="card" id="modal-content"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav('categorias.html');
+let categoriasCache = [];
+
+function formCategoria(titulo, valores, onSubmit) {
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">${titulo}</h2>
+    <form class="inline" id="form-categoria-modal">
+      <div class="field" style="min-width:100%"><label>Nome</label><input name="nome" value="${escapeAttr(valores.nome || '')}" required /></div>
+      <div class="row" style="width:100%">
+        <button type="submit">Salvar</button>
+        <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+      </div>
+    </form>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  document.getElementById('form-categoria-modal').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await onSubmit(Object.fromEntries(fd.entries()));
+    closeModal();
+    load();
+  });
+}
+
+function abrirNovaCategoria() {
+  formCategoria('Nova categoria', {}, async (body) => {
+    await apiPost('/api/categorias-produto', body);
+    toast('Categoria cadastrada com sucesso!');
+  });
+}
+window.abrirNovaCategoria = abrirNovaCategoria;
+
+function abrirEdicaoCategoria(id) {
+  const c = categoriasCache.find((x) => x.id === id);
+  if (!c) return;
+  formCategoria('Editar categoria', c, async (body) => {
+    await apiPatch(`/api/categorias-produto/${id}`, body);
+    toast('Categoria atualizada com sucesso!');
+  });
+}
+window.abrirEdicaoCategoria = abrirEdicaoCategoria;
+
+async function excluirCategoria(id) {
+  if (!confirm('Excluir esta categoria?')) return;
+  await apiDelete(`/api/categorias-produto/${id}`);
+  toast('Categoria excluída.');
+  load();
+}
+window.excluirCategoria = excluirCategoria;
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const lista = !termo ? categoriasCache : categoriasCache.filter((c) => c.nome.toLowerCase().includes(termo));
+  document.getElementById('tbody').innerHTML = lista.map((c) => `
+    <tr class="clickable" onclick="abrirEdicaoCategoria(${c.id})">
+      <td>${escapeHtml(c.nome)}</td>
+      <td style="text-align:right"><button type="button" class="small danger" onclick="event.stopPropagation(); excluirCategoria(${c.id})">Excluir</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="2" class="muted">Nenhuma categoria cadastrada.</td></tr>';
+}
+document.getElementById('busca').addEventListener('input', render);
+
+async function load() {
+  categoriasCache = await apiGet('/api/categorias-produto');
+  render();
+}
+load();
+</script>
+</body>
+</html>
