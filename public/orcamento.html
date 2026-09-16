@@ -242,7 +242,7 @@ async function load() {
       <thead><tr><th>Pedido</th><th>Cliente</th><th>Descrição</th><th>Dimensões</th><th>Variação</th><th>Cor</th><th>Qtd</th><th></th></tr></thead>
       <tbody>
         ${pendentes.map(({ p, it }) => `<tr class="clickable" onclick='openOrcamentoForm(${JSON.stringify(p).replace(/'/g, "&apos;")}, ${JSON.stringify(it).replace(/'/g, "&apos;")})'>
-          <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${escapeHtml(it.descricao)}</td><td>${escapeHtml(it.dimensoes || '—')}</td><td>${escapeHtml(it.variacao || '—')}</td><td>${escapeHtml(it.corFilamento || '—')}</td><td>${it.quantidade}</td>
+          <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${escapeHtml(it.descricao)}</td><td>${escapeHtml(it.dimensoes || '—')}</td><td>${escapeHtml(it.variacao || '—')}</td><td>${escapeHtml(it.corFilamento || '—')}</td><td>${it.quantidade}</td>
           <td><button class="small" onclick='event.stopPropagation(); openOrcamentoForm(${JSON.stringify(p).replace(/'/g, "&apos;")}, ${JSON.stringify(it).replace(/'/g, "&apos;")})'>Orçar</button></td>
         </tr>`).join('')}
       </tbody>

@@ -369,7 +369,7 @@ function renderResumoItem(div, valores) {
   const produtoId = div.dataset.produtoId;
   const produto = produtoId ? produtosCache.find(p => p.id === Number(produtoId)) : null;
   const thumbHtml = produto && produto.imagem
-    ? `<img class="thumb item-summary-thumb" src="${escapeAttr(produto.imagem)}" />`
+    ? `<img class="thumb item-summary-thumb" loading="lazy" src="${escapeAttr(produto.imagem)}" />`
     : `<span class="thumb item-summary-thumb" style="display:inline-block"></span>`;
   const subTxt = [cor, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
   const o = valores.orcamento;
@@ -387,6 +387,7 @@ function renderResumoItem(div, valores) {
       <button type="button" class="small secondary btn-editar-item">✎ Editar</button>
       <button type="button" class="small danger btn-remover-item-resumo">✕</button>
     </div>
+    ${valores.id ? producaoItemControlesHtml(valores, impressorasCache, usuariosCache) : ''}
   `;
   summary.querySelector('.btn-editar-item').addEventListener('click', () => alternarModoItem(div, true));
   summary.querySelector('.btn-remover-item-resumo').addEventListener('click', () => removerItem(div));
@@ -593,7 +594,7 @@ async function collectItem(block) {
       corFilamento: item.corFilamento,
       modeloRef: item.modeloRef
     };
-    if (file) produtoBody.imagemBase64 = await fileToBase64(file);
+    if (file) produtoBody.imagemBase64 = await fileToResizedImageBase64(file);
     const produto = await apiPost('/api/produtos', produtoBody);
     toast(`Produto "${produto.nome}" cadastrado no catálogo!`);
     item.produtoId = produto.id;
@@ -738,6 +739,7 @@ function abrirEditarPedido(id) {
         ? '<button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>'
         : '<p class="muted" style="font-size:13px;margin-bottom:14px">Pedido já aprovado — não é mais possível adicionar ou remover produtos.</p>'}
       <div id="total-pedido" class="muted" style="margin-bottom:14px;font-size:14px"></div>
+      <div id="producao-resumo"></div>
       <h3>Despesas adicionais (embalagem, frete etc.)</h3>
       <div id="despesas-container"></div>
       <div class="row" style="width:100%">
@@ -753,6 +755,7 @@ function abrirEditarPedido(id) {
     document.getElementById('btn-add-item').addEventListener('click', () => addItemBlock());
   }
   renderDespesasPedido(p);
+  document.getElementById('producao-resumo').innerHTML = producaoResumoHtml(p, usuariosCache);
 
   document.getElementById('form-editar-pedido').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -873,7 +876,59 @@ function atualizarPedidoEmEdicao(pedidoAtualizado) {
   renderPedidos();
   renderDespesasPedido(pedidoAtualizado);
   atualizarTotalPedido();
+  document.getElementById('producao-resumo').innerHTML = producaoResumoHtml(pedidoAtualizado, usuariosCache);
 }
+
+// ---------- Ações de produção por item, chamadas de dentro do resumo do item no modal ----------
+async function recarregarAposAcaoProducao() {
+  pedidosCache = await apiGet('/api/pedidos');
+  abrirEditarPedido(pedidoEmEdicaoId);
+  renderPedidos();
+  renderFila();
+}
+async function onAtribuirImpressoraItem(itemId, impressoraId) {
+  await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}/producao`, { action: 'atribuir_impressora', impressoraId });
+  toast('Impressora atribuída!');
+  await recarregarAposAcaoProducao();
+}
+async function onAtribuirResponsavelItem(itemId, responsavelId) {
+  await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}/producao`, { action: 'atribuir_responsavel', responsavelId });
+  toast('Responsável atribuído!');
+  await recarregarAposAcaoProducao();
+}
+async function onAtribuirResponsavelPedido(responsavelId) {
+  const p = pedidosCache.find((x) => x.id === pedidoEmEdicaoId);
+  for (const it of p.itens) {
+    await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${it.id}/producao`, { action: 'atribuir_responsavel', responsavelId });
+  }
+  toast('Responsável atribuído a todos os produtos!');
+  await recarregarAposAcaoProducao();
+}
+async function onIniciarItemProducao(itemId) {
+  await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}/producao`, { action: 'iniciar' });
+  toast('Impressão iniciada!');
+  await recarregarAposAcaoProducao();
+}
+async function onConcluirItemProducao(itemId) {
+  if (!confirm('Concluir impressão? Isso vai dar baixa no estoque de filamento.')) return;
+  await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}/producao`, { action: 'concluir' });
+  toast('Impressão concluída! Estoque atualizado.');
+  await recarregarAposAcaoProducao();
+}
+async function onFalhaItemProducao(itemId) {
+  const motivo = prompt('Motivo da falha:', '');
+  if (motivo === null) return;
+  const gramas = prompt('Gramas de filamento perdidas nessa tentativa (opcional):', '0');
+  await apiPatch(`/api/pedidos/${pedidoEmEdicaoId}/itens/${itemId}/producao`, { action: 'falha', motivo, gramasReimpressao: gramas });
+  toast('Falha registrada.', 'error');
+  await recarregarAposAcaoProducao();
+}
+window.onAtribuirImpressoraItem = onAtribuirImpressoraItem;
+window.onAtribuirResponsavelItem = onAtribuirResponsavelItem;
+window.onAtribuirResponsavelPedido = onAtribuirResponsavelPedido;
+window.onIniciarItemProducao = onIniciarItemProducao;
+window.onConcluirItemProducao = onConcluirItemProducao;
+window.onFalhaItemProducao = onFalhaItemProducao;
 
 window.aprovar = aprovar; window.recusar = recusar; window.marcarEntrega = marcarEntrega; window.excluirPedido = excluirPedido; window.abrirEditarPedido = abrirEditarPedido;
 
@@ -919,7 +974,7 @@ function renderFila() {
   document.getElementById('fila').innerHTML = fila.length ? `
     <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Peso/Tempo</th><th>Impressora</th><th>Ações</th></tr></thead>
     <tbody>${fila.map(({ p, it }) => `<tr>
-      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
       <td>${it.orcamento ? somaPesoOrcamento(it.orcamento) + 'g / ' + it.orcamento.tempoHoras + 'h' : '—'}</td>
       <td>${impressoraSelect(p, it)}</td>
       <td>
@@ -932,7 +987,7 @@ function renderFila() {
   document.getElementById('imprimindo').innerHTML = imprimindo.length ? `
     <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Impressora</th><th>Início</th><th>Ações</th></tr></thead>
     <tbody>${imprimindo.map(({ p, it }) => `<tr>
-      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
       <td>${it.impressoraId ? escapeHtml((impressorasCache.find(i=>i.id===it.impressoraId)||{}).nome) : '—'}</td>
       <td class="muted">${fmtDate(it.inicioImpressao)}</td>
       <td>
@@ -962,7 +1017,7 @@ function acoes(p) {
 }
 
 function produtos(p) {
-  return p.itens.map(it => `${it.imagem ? `<img class="thumb" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}`).join('<br>');
+  return p.itens.map(it => `${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}`).join('<br>');
 }
 
 function valorPedido(p) {

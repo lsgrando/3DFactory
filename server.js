@@ -786,6 +786,7 @@ async function api(req, res, pathname, query) {
       const socio = responsavelId ? socios.findById(responsavelId) : null;
       if (responsavelId && !socio) return sendJSON(res, 400, { error: 'Sócio inválido' });
 
+      const comprovante = body.comprovanteBase64 ? saveComprovanteBase64(body.comprovanteBase64, `comprovante-movimentacao-${Date.now()}`) : null;
       const mov = movimentacoesFinanceiras.insert({
         tipo: body.tipo,
         valor,
@@ -801,7 +802,8 @@ async function api(req, res, pathname, query) {
         estornado: false,
         estornoDe: null,
         data: body.data ? new Date(body.data).toISOString() : new Date().toISOString(),
-        criadoEm: new Date().toISOString()
+        criadoEm: new Date().toISOString(),
+        comprovante
       });
       if (conta) contasFinanceiras.ajustarSaldo(conta.id, mov.tipo === 'entrada' ? valor : -valor);
       return sendJSON(res, 201, mov);
@@ -1284,6 +1286,9 @@ async function api(req, res, pathname, query) {
       if (body.action === 'atribuir_impressora') {
         item.impressoraId = Number(body.impressoraId);
         itens.update(item.id, { impressoraId: item.impressoraId });
+      } else if (body.action === 'atribuir_responsavel') {
+        item.responsavelId = body.responsavelId ? Number(body.responsavelId) : null;
+        itens.update(item.id, { responsavelId: item.responsavelId });
       } else if (body.action === 'iniciar') {
         item.status = 'imprimindo';
         item.inicioImpressao = new Date().toISOString();

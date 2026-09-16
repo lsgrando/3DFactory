@@ -14,7 +14,7 @@
   <div class="toolbar">
     <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
     <div class="row">
-      <button type="button" class="secondary" onclick="window.open('catalogo-imprimir.html', '_blank')">📄 Exportar catálogo PDF</button>
+      <button type="button" class="secondary" onclick="abrirFiltroCatalogo()">📄 Exportar catálogo PDF</button>
       <button type="button" onclick="abrirNovoProduto()">+ Novo produto</button>
     </div>
   </div>
@@ -150,7 +150,7 @@ function wireDropzoneImagem() {
   const texto = document.getElementById('dropzone-texto');
 
   wireImageDropzone(zone, input, async (file) => {
-    imagemBase64Atual = await fileToBase64(file);
+    imagemBase64Atual = await fileToResizedImageBase64(file);
     preview.src = imagemBase64Atual;
     preview.style.display = 'inline-block';
     texto.style.display = 'none';
@@ -256,7 +256,7 @@ function render() {
   document.getElementById('grid').innerHTML = lista.length ? lista.map(p => `
     <div class="produto-card" style="${p.ativo === false ? 'opacity:.55' : ''}">
       <div class="clickable" style="cursor:pointer" onclick="abrirEdicaoProduto(${p.id})">
-        ${p.imagem ? `<img class="thumb-lg" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
+        ${p.imagem ? `<img class="thumb-lg" loading="lazy" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
         <h4>${escapeHtml(p.nome)}</h4>
         <div class="muted">${escapeHtml(nomeCategoria(p.categoriaId))} · ${escapeHtml(p.dimensoes || '—')}${p.ativo === false ? ' · Desativado' : ''}</div>
       </div>
@@ -278,6 +278,44 @@ async function alternarAtivoProduto(id, ativar) {
   load();
 }
 window.alternarAtivoProduto = alternarAtivoProduto;
+
+// Deixa escolher uma ou mais categorias antes de gerar o catálogo em PDF — sem nada marcado,
+// o botão fica desabilitado (não faz sentido gerar um catálogo vazio).
+function abrirFiltroCatalogo() {
+  const opcoes = categoriasCache.map((c) => `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 0">
+      <input type="checkbox" class="chk-cat-catalogo" value="${c.id}" checked /> ${escapeHtml(c.nome)}
+    </label>
+  `).join('') + `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 0">
+      <input type="checkbox" class="chk-cat-catalogo" value="sem" checked /> Sem categoria
+    </label>
+  `;
+  document.getElementById('modal-content').innerHTML = `
+    <h2 style="margin-top:0">Gerar catálogo em PDF</h2>
+    <p class="muted" style="font-size:13px">Escolha as categorias que devem entrar no catálogo.</p>
+    <div class="row" style="margin-bottom:10px">
+      <button type="button" class="small secondary" id="btn-marcar-todas">Marcar todas</button>
+      <button type="button" class="small secondary" id="btn-desmarcar-todas">Desmarcar todas</button>
+    </div>
+    <div id="lista-cat-catalogo">${opcoes}</div>
+    <div class="row" style="width:100%;margin-top:14px">
+      <button type="button" id="btn-gerar-catalogo">Gerar catálogo</button>
+      <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+    </div>
+  `;
+  document.getElementById('modal-bg').style.display = 'flex';
+  const checks = () => [...document.querySelectorAll('.chk-cat-catalogo')];
+  document.getElementById('btn-marcar-todas').addEventListener('click', () => checks().forEach((c) => { c.checked = true; }));
+  document.getElementById('btn-desmarcar-todas').addEventListener('click', () => checks().forEach((c) => { c.checked = false; }));
+  document.getElementById('btn-gerar-catalogo').addEventListener('click', () => {
+    const selecionadas = checks().filter((c) => c.checked).map((c) => c.value);
+    if (!selecionadas.length) { toast('Selecione ao menos uma categoria.', 'error'); return; }
+    window.open(`catalogo-imprimir.html?categorias=${encodeURIComponent(selecionadas.join(','))}`, '_blank');
+    closeModal();
+  });
+}
+window.abrirFiltroCatalogo = abrirFiltroCatalogo;
 
 async function excluirProduto(id) {
   if (!confirm('Excluir este produto definitivamente? Essa ação não pode ser desfeita.')) return;

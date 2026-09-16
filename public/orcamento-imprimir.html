@@ -143,13 +143,15 @@ async function load() {
     <div class="doc-block">
       <h2>Itens orçados</h2>
       <table class="doc-itens">
-        <thead><tr><th>Descrição</th><th>Qtd</th><th>Variação</th><th class="valor">Valor</th></tr></thead>
+        <thead><tr><th>Descrição</th><th>Qtd</th><th>Variação</th><th>Cor do filamento</th><th>Dimensões</th><th class="valor">Valor</th></tr></thead>
         <tbody>
           ${orcados.map((it) => `
             <tr>
               <td>${escapeHtml(it.descricao)}</td>
               <td>${it.quantidade}</td>
               <td>${escapeHtml(it.variacao || '—')}</td>
+              <td>${escapeHtml(it.corFilamento || '—')}</td>
+              <td>${escapeHtml(it.dimensoes || '—')}</td>
               <td class="valor">${money(it.orcamento.precoVenda * it.quantidade)}</td>
             </tr>
           `).join('')}

@@ -190,9 +190,17 @@ async function load() {
     return;
   }
 
-  const produtosAtivos = produtos.filter((p) => p.ativo !== false);
+  // ?categorias=1,2,sem filtra o catálogo pras categorias escolhidas em Produtos (id numérico,
+  // ou "sem" pra produtos sem categoria) — sem o parâmetro, mostra tudo (link direto/antigo).
+  const categoriasFiltro = new URLSearchParams(location.search).get('categorias');
+  const idsFiltro = categoriasFiltro ? categoriasFiltro.split(',') : null;
+
+  let produtosAtivos = produtos.filter((p) => p.ativo !== false);
+  if (idsFiltro) {
+    produtosAtivos = produtosAtivos.filter((p) => idsFiltro.includes(p.categoriaId ? String(p.categoriaId) : 'sem'));
+  }
   if (!produtosAtivos.length) {
-    sheet.innerHTML = '<p class="doc-erro">Nenhum produto cadastrado ainda.</p>';
+    sheet.innerHTML = '<p class="doc-erro">Nenhum produto encontrado para as categorias selecionadas.</p>';
     return;
   }
 

@@ -111,6 +111,29 @@ function fileToBase64(file) {
   });
 }
 
+// Redimensiona/comprime uma foto de produto no navegador antes de enviar — fotos de celular
+// chegam a alguns MB pra exibir como miniatura de 100x130px, o que deixava as telas de Produtos
+// e Vendas muito lentas pra carregar. Não usar em comprovante (documento precisa ficar fiel).
+function fileToResizedImageBase64(file, maxDim = 900, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+        else { width = Math.round((width * maxDim) / height); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    fileToBase64(file).then((dataUrl) => { img.src = dataUrl; }, reject);
+  });
+}
+
 const STATUS_LABEL = {
   novo: 'Novo',
   orcamento_pronto: 'Orçamento pronto',
@@ -152,6 +175,84 @@ function totalDespesasPedido(p) {
   return (p.despesasAdicionais || []).filter((d) => !d.estornado).reduce((s, d) => s + d.valor, 0);
 }
 
+// % de conclusão do pedido = itens com status concluído sobre o total de itens. Null antes de
+// entrar em produção (pedido ainda 'novo'/'orcamento_pronto'), onde o indicador não faz sentido.
+function percentualConclusaoPedido(p) {
+  const itens = p.itens || [];
+  if (!itens.length || !['na_fila', 'imprimindo', 'concluido'].includes(p.status)) return null;
+  const concluidos = itens.filter((it) => it.status === 'concluido').length;
+  return Math.round((concluidos / itens.length) * 100);
+}
+
+function usuarioSelectOptions(usuariosCache, selectedId) {
+  const opts = usuariosCache.map((u) => `<option value="${u.id}" ${Number(selectedId) === u.id ? 'selected' : ''}>${escapeHtml(u.nome)}</option>`).join('');
+  return `<option value="">— Sem responsável —</option>${opts}`;
+}
+
+// Bloco de controle de produção de um item (status, impressora, responsável e ações de
+// iniciar/concluir/falha) — usado dentro do resumo do item no modal de editar pedido, tanto em
+// vendas.html quanto em board.html. Só aparece depois que o pedido entra em produção (na_fila
+// em diante); antes disso não há o que controlar. As páginas que chamam isto devem definir
+// onIniciarItemProducao/onConcluirItemProducao/onFalhaItemProducao/onAtribuirImpressoraItem/
+// onAtribuirResponsavelItem (sabem qual é o pedidoEmEdicaoId e como re-renderizar o modal).
+function producaoItemControlesHtml(item, impressorasCache, usuariosCache) {
+  if (!['na_fila', 'imprimindo', 'concluido'].includes(item.status)) return '';
+  const impressoraNome = item.impressoraId ? ((impressorasCache.find((i) => i.id === item.impressoraId) || {}).nome || '—') : null;
+  let acoesHtml = '';
+  if (item.status === 'na_fila') {
+    acoesHtml = `
+      <select style="width:150px" onchange="onAtribuirImpressoraItem(${item.id}, this.value)">
+        <option value="" ${!item.impressoraId ? 'selected' : ''}>— Impressora —</option>
+        ${impressorasCache.map((i) => `<option value="${i.id}" ${item.impressoraId === i.id ? 'selected' : ''}>${escapeHtml(i.nome)}</option>`).join('')}
+      </select>
+      <button type="button" class="small" ${!item.impressoraId ? 'disabled title="Atribua uma impressora primeiro"' : ''} onclick="onIniciarItemProducao(${item.id})">Iniciar impressão</button>
+      <button type="button" class="small danger" onclick="onFalhaItemProducao(${item.id})">Registrar falha</button>
+    `;
+  } else if (item.status === 'imprimindo') {
+    acoesHtml = `
+      <span class="muted" style="font-size:12px">${escapeHtml(impressoraNome)} · desde ${fmtDate(item.inicioImpressao)}</span>
+      <button type="button" class="small" onclick="onConcluirItemProducao(${item.id})">Concluir</button>
+      <button type="button" class="small danger" onclick="onFalhaItemProducao(${item.id})">Registrar falha</button>
+    `;
+  } else {
+    acoesHtml = `<span class="muted" style="font-size:12px">Concluído em ${fmtDate(item.fimImpressao)}</span>`;
+  }
+  return `
+    <div class="item-producao-controles" style="width:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">
+      ${badge(item.status)}
+      <select style="width:170px" onchange="onAtribuirResponsavelItem(${item.id}, this.value)">
+        ${usuarioSelectOptions(usuariosCache, item.responsavelId)}
+      </select>
+      ${acoesHtml}
+    </div>
+  `;
+}
+
+// Responsável "predominante" do pedido — usado só pra pré-selecionar o combo de aplicar a
+// todos; se os itens têm responsáveis diferentes entre si, não pré-seleciona nenhum.
+function responsavelPredominanteDoPedido(p) {
+  const ids = (p.itens || []).map((it) => it.responsavelId).filter(Boolean);
+  if (!ids.length) return null;
+  return ids.every((id) => id === ids[0]) ? ids[0] : null;
+}
+
+// Resumo de produção do pedido (% de conclusão + responsável aplicado a todos os produtos),
+// mostrado no modal de editar pedido logo abaixo do total. A página que chama isto deve
+// definir onAtribuirResponsavelPedido(valor).
+function producaoResumoHtml(p, usuariosCache) {
+  const pct = percentualConclusaoPedido(p);
+  if (pct === null) return '';
+  return `
+    <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <b>Produção: ${pct}% concluído</b>
+      <span class="muted" style="font-size:13px">Responsável (aplicar a todos os produtos):</span>
+      <select style="width:170px" onchange="onAtribuirResponsavelPedido(this.value)">
+        ${usuarioSelectOptions(usuariosCache, responsavelPredominanteDoPedido(p))}
+      </select>
+    </div>
+  `;
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -179,7 +280,7 @@ function wireProdutoCombobox(root, produtos, onSelect, valorInicial) {
     const limpar = `<div class="produto-combobox-item" data-id="">— Nenhum / digitar manualmente —</div>`;
     const itens = filtrados.map((p) => `
       <div class="produto-combobox-item" data-id="${p.id}">
-        ${p.imagem ? `<img class="thumb" src="${escapeAttr(p.imagem)}" />` : '<span class="produto-combobox-sem-imagem"></span>'}
+        ${p.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(p.imagem)}" />` : '<span class="produto-combobox-sem-imagem"></span>'}
         <span>${escapeHtml(p.nome)}</span>
       </div>
     `).join('') || '<div class="muted" style="padding:6px 10px;font-size:13px">Nenhum produto encontrado.</div>';

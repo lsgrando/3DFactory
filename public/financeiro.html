@@ -67,16 +67,17 @@
           <option value="entrada">Entrada</option>
         </select>
       </div>
-      <div class="field"><label>Forma de pagamento</label><select name="formaPagamento" id="mov-forma"></select></div>
       <div class="field"><label>Categoria</label><select name="categoria" id="mov-categoria"></select></div>
       <div class="field" id="mov-categoria-outro-field" style="display:none"><label>Descreva a categoria</label><input name="categoriaOutro" /></div>
       <div class="field" id="mov-responsavel-field"><label>Pago por</label>
         <select id="mov-responsavel"><option value="">Caixa da empresa</option></select>
       </div>
       <div class="field" id="mov-conta-field"><label>Conta</label><select id="mov-conta"></select></div>
+      <div class="field"><label>Forma de pagamento</label><select name="formaPagamento" id="mov-forma"></select></div>
       <div class="field"><label>Valor (R$)</label><input name="valor" type="number" step="0.01" min="0.01" required /></div>
       <div class="field"><label>Data</label><input name="data" type="date" /></div>
       <div class="field" style="min-width:100%"><label>Descrição</label><input name="descricao" placeholder="Detalhes do lançamento" /></div>
+      <div class="field" style="min-width:100%"><label>Comprovante (opcional)</label><input type="file" id="mov-comprovante" accept="image/*,application/pdf" /></div>
       <button type="submit">Lançar</button>
     </form>
   </div>
@@ -199,6 +200,8 @@ document.getElementById('form-mov').addEventListener('submit', async (e) => {
   } else {
     body.contaId = document.getElementById('mov-conta').value;
   }
+  const comprovanteFile = document.getElementById('mov-comprovante').files[0];
+  if (comprovanteFile) body.comprovanteBase64 = await fileToBase64(comprovanteFile);
   await apiPost('/api/movimentacoes-financeiras', body);
   toast('Movimentação lançada com sucesso!');
   form.reset();
@@ -594,6 +597,9 @@ function linhaRelatorio(m) {
   if (m.estornado) acao = '<span class="muted">Estornada</span>';
   else if (m.estornoDe) acao = '<span class="muted">Estorno</span>';
   else acao = `<button class="small danger" onclick="estornar(${m.id})">Estornar</button>`;
+  const comprovanteLink = m.comprovante
+    ? `<a href="${escapeAttr(m.comprovante)}" target="_blank" rel="noopener" class="small secondary" style="display:inline-block;padding:5px 10px;margin-right:4px;text-decoration:none">📎</a>`
+    : '';
   return `<tr>
     <td class="muted">${fmtDate(m.data)}</td>
     <td>${badge(m.tipo, m.tipo === 'entrada' ? 'Entrada' : 'Saída')}</td>
@@ -603,7 +609,7 @@ function linhaRelatorio(m) {
     <td>${escapeHtml(socioNome)}</td>
     <td class="col-wrap">${escapeHtml(m.descricao || '—')}</td>
     <td>${money(m.valor)}</td>
-    <td>${acao}</td>
+    <td>${comprovanteLink}${acao}</td>
   </tr>`;
 }
 
