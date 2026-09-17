@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Manutenção de fotos — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Manutenção de fotos</h1>
+  <p class="subtitle">
+    Ferramenta única pra recomprimir fotos de produto cadastradas antes da compressão automática
+    (fotos de celular de vários MB usadas como miniatura). Roda uma vez só; pode fechar a aba
+    depois de terminar.
+  </p>
+
+  <div class="toolbar">
+    <div class="row">
+      <button type="button" id="btn-verificar" onclick="verificar()">1. Verificar fotos grandes</button>
+      <button type="button" id="btn-processar" onclick="processar()" disabled>2. Recomprimir</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div id="resumo">Clique em "Verificar fotos grandes" pra listar o que precisa recomprimir.</div>
+    <pre id="log" style="margin-top:12px;white-space:pre-wrap;font-size:13px;"></pre>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderNav('manutencao-fotos.html');
+
+const LIMITE_BYTES = 300 * 1024; // acima disso vale a pena recomprimir
+let pendentes = [];
+
+function log(msg) {
+  document.getElementById('log').textContent += msg + '\n';
+}
+function fmtKB(bytes) {
+  return (bytes / 1024).toFixed(0) + ' KB';
+}
+
+async function verificar() {
+  const btn = document.getElementById('btn-verificar');
+  btn.disabled = true;
+  document.getElementById('log').textContent = '';
+  document.getElementById('resumo').textContent = 'Verificando...';
+  const produtos = await apiGet('/api/produtos');
+  pendentes = [];
+  for (const p of produtos) {
+    if (!p.imagem) continue;
+    const r = await fetch(p.imagem);
+    const blob = await r.blob();
+    if (blob.size > LIMITE_BYTES) {
+      pendentes.push({ id: p.id, nome: p.nome, imagem: p.imagem, tamanhoAntes: blob.size });
+      log(`${p.nome} (#${p.id}) — ${fmtKB(blob.size)}`);
+    }
+  }
+  document.getElementById('resumo').textContent = pendentes.length
+    ? `${pendentes.length} foto(s) grande(s) encontrada(s). Total: ${fmtKB(pendentes.reduce((s, x) => s + x.tamanhoAntes, 0))}.`
+    : 'Nenhuma foto grande encontrada — nada a fazer.';
+  document.getElementById('btn-processar').disabled = pendentes.length === 0;
+  btn.disabled = false;
+}
+
+async function processar() {
+  const btn = document.getElementById('btn-processar');
+  btn.disabled = true;
+  let totalAntes = 0;
+  let totalDepois = 0;
+  for (const item of pendentes) {
+    try {
+      const r = await fetch(item.imagem);
+      const blob = await r.blob();
+      const file = new File([blob], `produto-${item.id}`, { type: blob.type });
+      const dataUrl = await fileToResizedImageBase64(file);
+      await apiPatch(`/api/produtos/${item.id}`, { imagemBase64: dataUrl });
+      const depois = Math.round((dataUrl.length - dataUrl.indexOf(',') - 1) * 0.75);
+      totalAntes += item.tamanhoAntes;
+      totalDepois += depois;
+      log(`OK ${item.nome} (#${item.id}) — ${fmtKB(item.tamanhoAntes)} → ${fmtKB(depois)}`);
+    } catch (e) {
+      log(`ERRO ${item.nome} (#${item.id}) — ${e.message || e}`);
+    }
+  }
+  document.getElementById('resumo').textContent =
+    `Concluído. Total antes: ${fmtKB(totalAntes)} — total depois: ${fmtKB(totalDepois)}.`;
+}
+</script>
+</body>
+</html>
