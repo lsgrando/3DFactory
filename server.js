@@ -2,6 +2,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const {
   usuarios,
   params,
@@ -97,10 +98,26 @@ const MIME = {
   '.pdf': 'application/pdf'
 };
 
+// Comprime com gzip quando o cliente aceita e o corpo compensa (evita gastar CPU em respostas
+// minúsculas ou em formatos já comprimidos como imagens/PDF).
+function writeCompressed(req, res, status, headers, body, compressible) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const finalHeaders = Object.assign({}, headers);
+  const acceptaGzip = /\bgzip\b/.test((req && req.headers['accept-encoding']) || '');
+  if (compressible && acceptaGzip && buf.length > 512) {
+    finalHeaders['Content-Encoding'] = 'gzip';
+    finalHeaders['Vary'] = 'Accept-Encoding';
+    res.writeHead(status, finalHeaders);
+    return res.end(zlib.gzipSync(buf));
+  }
+  res.writeHead(status, finalHeaders);
+  res.end(buf);
+}
+
 function sendJSON(res, status, data, extraHeaders) {
   const body = JSON.stringify(data);
-  res.writeHead(status, Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, extraHeaders || {}));
-  res.end(body);
+  const headers = Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, extraHeaders || {});
+  writeCompressed(res.req, res, status, headers, body, true);
 }
 
 function parseCookies(req) {
@@ -144,6 +161,42 @@ function readBody(req) {
   });
 }
 
+const COMPRESSIBLE_EXT = new Set(['.html', '.js', '.css', '.json']);
+
+// ETag barato (sem ler o arquivo) baseado em tamanho+mtime — suficiente pra detectar troca de
+// conteúdo (ex: foto de produto reenviada com o mesmo nome) e habilitar 304 sem reler o arquivo.
+function buildETag(stat) {
+  return `"${stat.size.toString(16)}-${stat.mtimeMs.toString(16)}"`;
+}
+
+function serveFile(req, res, filePath, cacheControl) {
+  fs.stat(filePath, (err, stat) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('Not found');
+    }
+    const ext = path.extname(filePath);
+    const etag = buildETag(stat);
+    const headers = {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'ETag': etag,
+      'Last-Modified': stat.mtime.toUTCString(),
+      'Cache-Control': cacheControl
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    fs.readFile(filePath, (err2, data) => {
+      if (err2) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('Not found');
+      }
+      writeCompressed(req, res, 200, headers, data, COMPRESSIBLE_EXT.has(ext));
+    });
+  });
+}
+
 function serveStatic(req, res, pathname) {
   if (pathname.startsWith('/uploads/')) {
     const filePath = path.join(UPLOADS_DIR, pathname.slice('/uploads/'.length));
@@ -151,15 +204,9 @@ function serveStatic(req, res, pathname) {
       res.writeHead(403);
       return res.end('Forbidden');
     }
-    return fs.readFile(filePath, (err, data) => {
-      if (err) {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        return res.end('Not found');
-      }
-      const ext = path.extname(filePath);
-      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-      res.end(data);
-    });
+    // Fotos podem ser reenviadas com o mesmo nome de arquivo — cache curto com revalidação
+    // (via ETag) evita re-baixar tudo a cada navegação sem arriscar mostrar foto desatualizada.
+    return serveFile(req, res, filePath, 'public, max-age=300, must-revalidate');
   }
   let filePath = pathname === '/' ? '/index.html' : pathname;
   filePath = path.join(PUBLIC_DIR, filePath);
@@ -167,15 +214,7 @@ function serveStatic(req, res, pathname) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      return res.end('Not found');
-    }
-    const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-    res.end(data);
-  });
+  serveFile(req, res, filePath, 'public, max-age=3600, must-revalidate');
 }
 
 function findItem(pedido, itemId) {
@@ -1563,6 +1602,7 @@ async function api(req, res, pathname, query) {
 }
 
 const server = http.createServer((req, res) => {
+  res.req = req;
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
   const query = Object.fromEntries(url.searchParams);
