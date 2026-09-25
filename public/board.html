@@ -95,7 +95,9 @@ function usuarioOptions() {
     usuariosCache.map(u => `<option value="${escapeAttr(u.nome)}" ${u.nome === atual ? 'selected' : ''}>${escapeHtml(u.nome)}</option>`).join('');
 }
 
-function mostrarInfoProduto(div, produtoId) {
+// `autoSelecionarUnica`: só quando o vendedor acabou de escolher o produto — se ele tiver uma única
+// variação, já aplica ela. Não roda ao reabrir item salvo/duplicado pra não sobrescrever peso/tempo.
+function mostrarInfoProduto(div, produtoId, autoSelecionarUnica) {
   const produto = produtoId ? produtosCache.find(p => p.id === produtoId) : null;
   const thumbField = div.querySelector('.produto-thumb-field');
   const thumb = div.querySelector('.produto-thumb');
@@ -116,11 +118,13 @@ function mostrarInfoProduto(div, produtoId) {
     precoField.style.display = 'none';
   }
   if (variacoesDoProduto.length) {
+    const unica = autoSelecionarUnica && variacoesDoProduto.length === 1 ? variacoesDoProduto[0] : null;
     variacaoWrap.innerHTML = `<input class="search-select-input" placeholder="Buscar variação..." autocomplete="off" /><div class="search-select-list"></div>`;
     wireSearchSelect(variacaoWrap, variacoesDoProduto.map(v => ({ value: v.id, label: v.nome })), (val) => {
       if (val) aplicarVariacaoNoItem(div, val);
-    }, '', '— Selecionar —');
+    }, unica ? unica.id : '', '— Selecionar —');
     variacaoSelectField.style.display = '';
+    if (unica) aplicarVariacaoNoItem(div, unica.id);
   } else {
     variacaoSelectField.style.display = 'none';
   }
@@ -135,6 +139,7 @@ function aplicarVariacaoNoItem(div, variacaoId) {
   const v = variacoesCache.find(x => x.id === Number(variacaoId));
   if (!v) return;
   div.querySelector('[name="variacao"]').value = v.nome;
+  if (v.dimensoes) div.querySelector('[name="dimensoes"]').value = v.dimensoes;
   if (v.tempoHoras) { const el = div.querySelector('.orc-tempo'); if (el) el.value = v.tempoHoras; }
   if (div._filRows && div._filRows[0]) {
     if (v.pesoGramas) div._filRows[0].pesoInput.value = v.pesoGramas;
@@ -160,7 +165,7 @@ function aplicarProdutoSelecionado(div, produtoId) {
   } else {
     novoProdutoField.style.display = '';
   }
-  mostrarInfoProduto(div, produtoId);
+  mostrarInfoProduto(div, produtoId, true);
 }
 
 function orcamentoFieldsHtml(item) {
@@ -845,6 +850,25 @@ async function handleDrop(pedido, fromCol, toCol) {
     return;
   }
   load();
+  return true;
+}
+
+// Destinos permitidos a partir de cada coluna — os mesmos que handleDrop aceita no arrastar.
+const TRANSICOES_STATUS = {
+  orcamento_pronto: ['na_fila', 'recusado'],
+  na_fila: ['imprimindo'],
+  imprimindo: ['concluido'],
+  concluido: ['entregue']
+};
+
+function statusSelectHtml(p) {
+  const atual = COLUNAS.find((c) => c.filtro(p));
+  const destinos = atual ? (TRANSICOES_STATUS[atual.key] || []) : [];
+  const dica = atual && atual.key === 'novo' ? 'Orce os produtos do pedido para poder avançar' : '';
+  return `<select id="sel-status" ${destinos.length ? '' : 'disabled'} title="${escapeAttr(dica)}">
+    <option value="" selected>${escapeHtml(atual ? atual.label : p.status)}</option>
+    ${destinos.map((k) => `<option value="${k}">→ ${escapeHtml(COLUNAS.find((c) => c.key === k).label)}</option>`).join('')}
+  </select>`;
 }
 
 function abrirEditarPedido(id) {
@@ -858,6 +882,7 @@ function abrirEditarPedido(id) {
     <h2 style="margin-top:0">Editar pedido #${p.id}</h2>
     <form id="form-editar-pedido">
       <div class="inline">
+        <div class="field"><label>Status</label>${statusSelectHtml(p)}</div>
         <div class="field"><label>Cliente</label><input name="cliente" value="${escapeAttr(p.cliente)}" /></div>
         <div class="field"><label>Contato</label><input name="contato" value="${escapeAttr(p.contato)}" /></div>
         <div class="field"><label>Vendedor</label><input name="vendedor" value="${escapeAttr(p.vendedor)}" /></div>
@@ -885,6 +910,13 @@ function abrirEditarPedido(id) {
     document.getElementById('btn-add-item').addEventListener('click', () => addItemBlock());
   }
   document.getElementById('producao-resumo').innerHTML = producaoResumoHtml(p, usuariosCache);
+  const selStatus = document.getElementById('sel-status');
+  selStatus.addEventListener('change', async () => {
+    if (!selStatus.value) return;
+    const mudou = await handleDrop(p, COLUNAS.find((c) => c.filtro(p)).key, selStatus.value);
+    if (mudou) closeModal();
+    else selStatus.value = '';
+  });
 
   document.getElementById('form-editar-pedido').addEventListener('submit', async (e) => {
     e.preventDefault();

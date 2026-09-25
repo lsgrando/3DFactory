@@ -165,6 +165,12 @@ function filamentosDoOrcamento(orcamento) {
   if (orcamento.filamentoId) return [{ filamentoId: orcamento.filamentoId, pesoGramas: orcamento.pesoGramas }];
   return [];
 }
+// Dimensão de um item de pedido: sempre a da variação cadastrada (produto + nome da variação);
+// só usa a gravada no próprio item quando ele não tem variação correspondente no cadastro.
+function dimensoesDoItem(item, variacoes) {
+  const v = item.produtoId ? variacoes.find((x) => x.produtoId === item.produtoId && x.nome === item.variacao) : null;
+  return (v && v.dimensoes) || item.dimensoes || '';
+}
 function somaPesoOrcamento(orcamento) {
   return filamentosDoOrcamento(orcamento).reduce((s, f) => s + Number(f.pesoGramas || 0), 0);
 }

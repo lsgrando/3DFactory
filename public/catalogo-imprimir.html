@@ -79,7 +79,7 @@
   }
   .produto-card-print h3 { margin: 10px 0 3px; font-size: 15px; color: #6b4a36; }
   .produto-card-print .desc { font-size: 12px; color: #8a7a6c; margin-bottom: 8px; }
-  .produto-card-print .dims { font-size: 11px; color: #a89a8d; margin-bottom: 6px; }
+  .produto-card-print .dims-linha { font-size: 11px; color: #a89a8d; }
   .produto-card-print .precos { font-size: 13px; }
   .produto-card-print .precos .linha {
     display: flex;
@@ -171,8 +171,8 @@ function precoHistorico(pedidos, produtoId, variacaoNome) {
   return melhor ? melhor.preco : null;
 }
 
-function precoLinha(nome, preco) {
-  const rotulo = nome ? escapeHtml(nome) : 'Valor';
+function precoLinha(nome, preco, dimensoes) {
+  const rotulo = (nome ? escapeHtml(nome) : 'Valor') + (dimensoes ? ` <span class="dims-linha">${escapeHtml(dimensoes)}</span>` : '');
   if (preco == null) return `<div class="linha"><span>${rotulo}</span><span class="indisponivel">Sob consulta</span></div>`;
   return `<div class="linha"><span>${rotulo}</span><span><b>${money(preco)}</b></span></div>`;
 }
@@ -215,24 +215,23 @@ async function load() {
     let linhasPreco;
     if (variacoesDoProduto.length) {
       linhasPreco = variacoesDoProduto.map((v) => {
-        if (v.precoVenda != null) return precoLinha(v.nome, v.precoVenda);
+        if (v.precoVenda != null) return precoLinha(v.nome, v.precoVenda, v.dimensoes);
         const hist = precoHistorico(pedidos, produto.id, v.nome);
-        if (hist != null) return precoLinha(v.nome, hist);
+        if (hist != null) return precoLinha(v.nome, hist, v.dimensoes);
         const custo = custoVariacao(v, filamentos, impressoras, tarifaKwh);
-        return precoLinha(v.nome, custo != null ? custo * MARGEM_PADRAO_CATALOGO : null);
+        return precoLinha(v.nome, custo != null ? custo * MARGEM_PADRAO_CATALOGO : null, v.dimensoes);
       }).join('');
     } else {
       let preco = precoHistorico(pedidos, produto.id, '');
       if (preco == null) preco = vendaDescricao;
       if (preco == null && custoDescricao != null) preco = custoDescricao * MARGEM_PADRAO_CATALOGO;
-      linhasPreco = precoLinha(null, preco);
+      linhasPreco = precoLinha(null, preco, produto.dimensoes);
     }
 
     return `
       <div class="produto-card-print">
         ${produto.imagem ? `<img src="${escapeAttr(produto.imagem)}" alt="${escapeHtml(produto.nome)}" />` : '<div class="sem-imagem">sem imagem</div>'}
         <h3>${escapeHtml(produto.nome)}</h3>
-        ${produto.dimensoes ? `<div class="dims">${escapeHtml(produto.dimensoes)}</div>` : ''}
         ${descricaoExibivel ? `<div class="desc">${escapeHtml(descricaoExibivel)}</div>` : ''}
         <div class="precos">${linhasPreco}</div>
       </div>

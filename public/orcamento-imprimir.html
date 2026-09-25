@@ -105,9 +105,9 @@ async function load() {
   const sheet = document.getElementById('sheet');
   if (!id) { sheet.innerHTML = '<p class="doc-erro">Pedido não informado.</p>'; return; }
 
-  let pedido;
+  let pedido, variacoes;
   try {
-    pedido = await apiGet(`/api/pedidos/${id}`);
+    [pedido, variacoes] = await Promise.all([apiGet(`/api/pedidos/${id}`), apiGet('/api/variacoes')]);
   } catch (e) {
     sheet.innerHTML = '<p class="doc-erro">Não foi possível carregar este pedido.</p>';
     return;
@@ -151,7 +151,7 @@ async function load() {
               <td>${it.quantidade}</td>
               <td>${escapeHtml(it.variacao || '—')}</td>
               <td>${escapeHtml(it.corFilamento || '—')}</td>
-              <td>${escapeHtml(it.dimensoes || '—')}</td>
+              <td>${escapeHtml(dimensoesDoItem(it, variacoes) || '—')}</td>
               <td class="valor">${money(it.orcamento.precoVenda * it.quantidade)}</td>
             </tr>
           `).join('')}

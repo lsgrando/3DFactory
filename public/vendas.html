@@ -101,7 +101,9 @@ function usuarioOptions() {
     usuariosCache.map(u => `<option value="${escapeAttr(u.nome)}" ${u.nome === atual ? 'selected' : ''}>${escapeHtml(u.nome)}</option>`).join('');
 }
 
-function mostrarInfoProduto(div, produtoId) {
+// `autoSelecionarUnica`: só quando o vendedor acabou de escolher o produto — se ele tiver uma única
+// variação, já aplica ela. Não roda ao reabrir item salvo/duplicado pra não sobrescrever peso/tempo.
+function mostrarInfoProduto(div, produtoId, autoSelecionarUnica) {
   const produto = produtoId ? produtosCache.find(p => p.id === produtoId) : null;
   const thumbField = div.querySelector('.produto-thumb-field');
   const thumb = div.querySelector('.produto-thumb');
@@ -122,11 +124,13 @@ function mostrarInfoProduto(div, produtoId) {
     precoField.style.display = 'none';
   }
   if (variacoesDoProduto.length) {
+    const unica = autoSelecionarUnica && variacoesDoProduto.length === 1 ? variacoesDoProduto[0] : null;
     variacaoWrap.innerHTML = `<input class="search-select-input" placeholder="Buscar variação..." autocomplete="off" /><div class="search-select-list"></div>`;
     wireSearchSelect(variacaoWrap, variacoesDoProduto.map(v => ({ value: v.id, label: v.nome })), (val) => {
       if (val) aplicarVariacaoNoItem(div, val);
-    }, '', '— Selecionar —');
+    }, unica ? unica.id : '', '— Selecionar —');
     variacaoSelectField.style.display = '';
+    if (unica) aplicarVariacaoNoItem(div, unica.id);
   } else {
     variacaoSelectField.style.display = 'none';
   }
@@ -141,6 +145,7 @@ function aplicarVariacaoNoItem(div, variacaoId) {
   const v = variacoesCache.find(x => x.id === Number(variacaoId));
   if (!v) return;
   div.querySelector('[name="variacao"]').value = v.nome;
+  if (v.dimensoes) div.querySelector('[name="dimensoes"]').value = v.dimensoes;
   if (v.tempoHoras) { const el = div.querySelector('.orc-tempo'); if (el) el.value = v.tempoHoras; }
   if (div._filRows && div._filRows[0]) {
     if (v.pesoGramas) div._filRows[0].pesoInput.value = v.pesoGramas;
@@ -166,7 +171,7 @@ function aplicarProdutoSelecionado(div, produtoId) {
   } else {
     novoProdutoField.style.display = '';
   }
-  mostrarInfoProduto(div, produtoId);
+  mostrarInfoProduto(div, produtoId, true);
 }
 
 function orcamentoFieldsHtml(item) {
