@@ -110,6 +110,17 @@ function mostrarInfoProduto(div, produtoId) {
   if (produto && produto.imagem) { thumb.src = produto.imagem; thumbField.style.display = ''; }
   else { thumbField.style.display = 'none'; }
   const variacoesDoProduto = produto ? variacoesCache.filter(v => v.produtoId === produto.id) : [];
+  // Preço de venda definido no cadastro (fica na variação) — só referência pro vendedor, não preenche nada.
+  const precoField = div.querySelector('.produto-preco-field');
+  if (produto) {
+    const comPreco = variacoesDoProduto.filter(v => v.precoVenda != null);
+    div.querySelector('.produto-preco-ref').innerHTML = comPreco.length
+      ? comPreco.map(v => `${v.nome ? escapeHtml(v.nome) + ': ' : ''}<b>${money(v.precoVenda)}</b>`).join('<br>')
+      : '<span class="muted">Sem preço cadastrado</span>';
+    precoField.style.display = '';
+  } else {
+    precoField.style.display = 'none';
+  }
   if (variacoesDoProduto.length) {
     variacaoWrap.innerHTML = `<input class="search-select-input" placeholder="Buscar variação..." autocomplete="off" /><div class="search-select-list"></div>`;
     wireSearchSelect(variacaoWrap, variacoesDoProduto.map(v => ({ value: v.id, label: v.nome })), (val) => {
@@ -449,6 +460,7 @@ function addItemBlock(valores) {
         </div>
       </div>
       <div class="field produto-thumb-field" style="display:${valores.imagem ? '' : 'none'}"><label>&nbsp;</label><img class="thumb-lg produto-thumb" src="${escapeAttr(valores.imagem || '')}" /></div>
+      <div class="field produto-preco-field" style="display:none"><label>Preço de catálogo</label><div class="produto-preco-ref" style="font-size:14px"></div></div>
       <div class="field" style="min-width:100%"><label>Descrição da peça</label><textarea name="descricao" required placeholder="O que o cliente pediu">${escapeAttr(valores.descricao || '')}</textarea></div>
       <div class="field"><label>Já imprimimos essa peça antes?</label>
         <select name="pecaJaFeita"><option value="false" ${!valores.pecaJaFeita ? 'selected' : ''}>Não</option><option value="true" ${valores.pecaJaFeita ? 'selected' : ''}>Sim</option></select>
@@ -603,12 +615,14 @@ async function collectItem(block) {
   return item;
 }
 
-function abrirNovoPedido() {
+// Com `modelo`, abre o formulário já preenchido com os produtos/orçamentos de outro pedido
+// (duplicar) — cliente e Id da plataforma ficam em branco pra escolher o novo cliente.
+function abrirNovoPedido(modelo) {
   itemSeq = 0;
   pedidoEmEdicaoId = null;
   pedidoEmEdicaoStatus = null;
   document.getElementById('modal-content').innerHTML = `
-    <h2 style="margin-top:0">Nova solicitação de orçamento</h2>
+    <h2 style="margin-top:0">${modelo ? `Duplicar pedido #${modelo.id}` : 'Nova solicitação de orçamento'}</h2>
     <form id="form-novo">
       <div class="inline">
         <div class="field"><label>Seu nome (vendedor)</label><select name="vendedor" required>${usuarioOptions()}</select></div>
@@ -628,7 +642,7 @@ function abrirNovoPedido() {
       <button type="button" class="secondary" id="btn-add-item" style="margin-bottom:14px">+ Adicionar produto</button>
       <div id="total-pedido" class="muted" style="margin-bottom:14px;font-size:14px"></div>
       <div class="inline">
-        <div class="field" style="min-width:100%"><label>Observações do pedido</label><textarea name="observacoes" placeholder="Prazo, urgência, detalhes extras"></textarea></div>
+        <div class="field" style="min-width:100%"><label>Observações do pedido</label><textarea name="observacoes" placeholder="Prazo, urgência, detalhes extras">${modelo ? escapeAttr(modelo.observacoes) : ''}</textarea></div>
       </div>
       <div class="row" style="width:100%">
         <button type="submit">Criar solicitação</button>
@@ -654,7 +668,24 @@ function abrirNovoPedido() {
     }
   }, '', '— Digitar manualmente —');
   document.getElementById('btn-add-item').addEventListener('click', addItemBlock);
-  addItemBlock();
+  if (modelo) {
+    // Sem id: cada item vira um item novo. O orçamento vem junto (mesmo preço final), só a
+    // validade é zerada — a do pedido original provavelmente já venceu.
+    modelo.itens.forEach((it) => addItemBlock({
+      produtoId: it.produtoId,
+      imagem: it.imagem,
+      descricao: it.descricao,
+      pecaJaFeita: it.pecaJaFeita,
+      modeloRef: it.modeloRef,
+      dimensoes: it.dimensoes,
+      variacao: it.variacao,
+      corFilamento: it.corFilamento,
+      quantidade: it.quantidade,
+      orcamento: it.orcamento ? { ...it.orcamento, validadeOrcamento: null } : null
+    }));
+  } else {
+    addItemBlock();
+  }
 
   document.getElementById('form-novo').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -686,6 +717,11 @@ function abrirNovoPedido() {
   });
 }
 window.abrirNovoPedido = abrirNovoPedido;
+function duplicarPedido(id) {
+  const p = pedidosCache.find((x) => x.id === id);
+  if (p) abrirNovoPedido(p);
+}
+window.duplicarPedido = duplicarPedido;
 
 async function loadCatalogos() {
   [filamentosCache, produtosCache, clientesCache, impressorasCache, variacoesCache, usuariosCache, paramsCache, contasCache, sociosCache] = await Promise.all([
@@ -745,6 +781,7 @@ function abrirEditarPedido(id) {
       <div class="row" style="width:100%">
         <button type="submit">Salvar</button>
         <button type="button" class="secondary" onclick="closeModal()">Cancelar</button>
+        <button type="button" class="secondary" onclick="duplicarPedido(${p.id})">Duplicar pedido</button>
         <button type="button" class="danger" style="margin-left:auto" onclick="excluirPedido(${p.id})">Excluir pedido</button>
       </div>
     </form>
