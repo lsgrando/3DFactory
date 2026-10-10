@@ -520,3 +520,31 @@ async function logout() {
   window.location.href = 'login.html';
 }
 window.logout = logout;
+
+// Campos numéricos aceitam vírgula como separador decimal (teclado brasileiro).
+// <input type="number"> rejeita vírgula em muitos navegadores, então vira texto
+// com teclado numérico e a vírgula é trocada por ponto enquanto o usuário digita
+// — assim o resto do código continua lendo .value com ponto normalmente.
+function aceitarVirgula(raiz) {
+  const inputs = raiz.matches?.('input[type=number]') ? [raiz] : raiz.querySelectorAll?.('input[type=number]') || [];
+  inputs.forEach((input) => {
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.dataset.decimal = '';
+  });
+}
+aceitarVirgula(document);
+new MutationObserver((mutations) => {
+  mutations.forEach((m) => m.addedNodes.forEach((n) => n.nodeType === 1 && aceitarVirgula(n)));
+}).observe(document.documentElement, { childList: true, subtree: true });
+// Fase de captura: normaliza antes dos listeners de 'input' das telas (cálculos ao vivo),
+// senão eles leem "12," e o resultado vira NaN.
+window.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.matches?.('input[data-decimal]')) return;
+  const limpo = el.value.replace(/,/g, '.').replace(/[^0-9.\-]/g, '');
+  if (limpo === el.value) return;
+  const pos = el.selectionStart - (el.value.length - limpo.length);
+  el.value = limpo;
+  el.setSelectionRange(pos, pos);
+}, true);

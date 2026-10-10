@@ -214,7 +214,10 @@ function serveStatic(req, res, pathname) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
-  serveFile(req, res, filePath, 'public, max-age=3600, must-revalidate');
+  // HTML/JS/CSS sempre revalidam (304 barato via ETag) — senão o navegador segue usando
+  // código antigo por até 1h depois de uma atualização do sistema.
+  const ext = path.extname(filePath);
+  serveFile(req, res, filePath, COMPRESSIBLE_EXT.has(ext) ? 'no-cache' : 'public, max-age=3600, must-revalidate');
 }
 
 function findItem(pedido, itemId) {
