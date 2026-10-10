@@ -28,7 +28,7 @@ const {
 const { calcularPrecificacao } = require('./lib/pricing');
 const { hashPassword, verifyPassword } = require('./lib/auth');
 const shopee = require('./lib/shopee');
-const { shopeeConexao } = require('./lib/db');
+const { shopeeConexao, shopeePedidosImportados } = require('./lib/db');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -477,6 +477,7 @@ function itemDoPedidoShopee(it) {
 function aplicarPedidoShopee(order) {
   const existente = pedidos.findByIdPlataforma(order.order_sn);
   if (existente) {
+    shopeePedidosImportados.registrar(order.order_sn); // cobre pedidos importados antes desse registro existir
     const podeCancelar = !['recusado', 'expirado', 'em_entrega', 'entregue'].includes(existente.status);
     if (order.order_status === 'CANCELLED' && podeCancelar) {
       const motivo = order.cancel_reason || order.buyer_cancel_reason;
@@ -484,7 +485,7 @@ function aplicarPedidoShopee(order) {
     }
     return;
   }
-  if (!SHOPEE_STATUS_IMPORTAR.includes(order.order_status)) return;
+  if (!SHOPEE_STATUS_IMPORTAR.includes(order.order_status) || shopeePedidosImportados.jaImportado(order.order_sn)) return;
   const itensPedido = (order.item_list || []).map(itemDoPedidoShopee);
   const todosOrcados = itensPedido.length > 0 && itensPedido.every((it) => it.orcamento);
   const observacoes = [
@@ -502,6 +503,7 @@ function aplicarPedidoShopee(order) {
     idPlataforma: order.order_sn,
     itens: itensPedido
   });
+  shopeePedidosImportados.registrar(order.order_sn);
   if (todosOrcados) aprovarPedido(pedido, 'Shopee');
   console.log(`Shopee: pedido ${order.order_sn} importado como #${pedido.id}`);
 }
