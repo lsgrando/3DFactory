@@ -27,6 +27,8 @@ const {
 } = require('./lib/db');
 const { calcularPrecificacao } = require('./lib/pricing');
 const { hashPassword, verifyPassword } = require('./lib/auth');
+const shopee = require('./lib/shopee');
+const { shopeeConexao } = require('./lib/db');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -1595,6 +1597,53 @@ async function api(req, res, pathname, query) {
       despesasPedido.marcarEstornado(despesa.id);
 
       return sendJSON(res, 200, pedidos.findById(pedido.id));
+    }
+
+    // ---------- SHOPEE ----------
+    if (parts[1] === 'shopee') {
+      const cfg = shopee.config();
+      if (parts[2] === 'status' && req.method === 'GET') {
+        const conexao = shopeeConexao.get();
+        const status = { configurado: !!cfg, ambiente: cfg ? cfg.ambiente : null, conectado: !!conexao };
+        if (cfg && conexao) {
+          status.shopId = conexao.shopId;
+          status.conectadoEm = conexao.conectadoEm;
+          try {
+            const info = await shopee.getLoja(cfg, '/api/v2/shop/get_shop_info');
+            status.nomeLoja = info.shop_name;
+          } catch (e) {
+            status.erro = e.message;
+          }
+        }
+        return sendJSON(res, 200, status);
+      }
+      if (usuarioAtual.papel !== 'admin') {
+        return sendJSON(res, 403, { error: 'Apenas administradores podem gerenciar a integração com a Shopee' });
+      }
+      if (!cfg) return sendJSON(res, 400, { error: 'Integração Shopee não configurada (SHOPEE_PARTNER_ID / SHOPEE_PARTNER_KEY)' });
+      // A Shopee só aceita voltar pro domínio cadastrado no app — por isso a URL sai do host acessado.
+      const proto = req.headers['x-forwarded-proto'] || 'http';
+      const urlRetorno = `${proto}://${req.headers.host}/api/shopee/callback`;
+      if (parts[2] === 'conectar' && req.method === 'GET') {
+        return sendJSON(res, 200, { url: shopee.linkAutorizacao(cfg, urlRetorno) });
+      }
+      if (parts[2] === 'callback' && req.method === 'GET') {
+        // Navegação do navegador vinda da Shopee — responde com redirect pra página, não JSON.
+        let destino = '/shopee.html?conectado=1';
+        try {
+          if (!query.code || !query.shop_id) throw new Error('Autorização não concluída na Shopee');
+          await shopee.conectar(cfg, query.code, Number(query.shop_id));
+        } catch (e) {
+          console.error(e);
+          destino = `/shopee.html?erro=${encodeURIComponent(e.message)}`;
+        }
+        res.writeHead(302, { Location: destino });
+        return res.end();
+      }
+      if (parts[2] === 'desconectar' && req.method === 'POST') {
+        shopeeConexao.remover();
+        return sendJSON(res, 200, { ok: true });
+      }
     }
 
     return sendJSON(res, 404, { error: 'Rota não encontrada' });

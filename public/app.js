@@ -419,7 +419,8 @@ const NAV_ITEMS = [
       { href: 'contas-financeiras.html', label: 'Contas Financeiras' },
       { href: 'taxas-cartao.html', label: 'Taxas de Cartão' },
       { href: 'socios.html', label: 'Sócios' },
-      { href: 'usuarios.html', label: 'Usuários' }
+      { href: 'usuarios.html', label: 'Usuários' },
+      { href: 'shopee.html', label: 'Integração Shopee' }
     ]
   }
 ];

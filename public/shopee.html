@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Integração Shopee — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Integração Shopee</h1>
+  <p class="subtitle">Conecta a loja da Shopee ao sistema pela Shopee Open Platform — base para importar os pedidos automaticamente.</p>
+
+  <div class="card" id="status-shopee">Carregando...</div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderNav('shopee.html');
+
+async function carregar() {
+  const el = document.getElementById('status-shopee');
+  const s = await apiGet('/api/shopee/status');
+  if (!s.configurado) {
+    el.innerHTML = '<p>Integração ainda não configurada: faltam as variáveis <b>SHOPEE_PARTNER_ID</b> e <b>SHOPEE_PARTNER_KEY</b> no servidor.</p>';
+    return;
+  }
+  const ambiente = s.ambiente === 'producao' ? 'Produção' : 'Teste (sandbox)';
+  if (!s.conectado) {
+    el.innerHTML = `<p>Ambiente: <b>${ambiente}</b></p><p>Nenhuma loja conectada.</p>
+      <button id="btn-conectar">Conectar loja Shopee</button>`;
+  } else {
+    el.innerHTML = `<p>Ambiente: <b>${ambiente}</b></p>
+      <p>Loja conectada: <b>${escapeHtml(s.nomeLoja || '—')}</b> <span class="muted">(shop_id ${escapeHtml(s.shopId)}, desde ${new Date(s.conectadoEm).toLocaleString('pt-BR')})</span></p>
+      ${s.erro ? `<p style="color:var(--red)">Erro ao falar com a Shopee: ${escapeHtml(s.erro)}</p>` : ''}
+      <button id="btn-conectar">Reconectar</button> <button class="danger" id="btn-desconectar">Desconectar</button>`;
+  }
+  document.getElementById('btn-conectar').addEventListener('click', async () => {
+    const { url } = await apiGet('/api/shopee/conectar');
+    window.location.href = url;
+  });
+  const btnDesconectar = document.getElementById('btn-desconectar');
+  if (btnDesconectar) btnDesconectar.addEventListener('click', async () => {
+    if (!confirm('Desconectar a loja Shopee do sistema?')) return;
+    await apiPost('/api/shopee/desconectar', {});
+    toast('Loja desconectada.');
+    carregar();
+  });
+}
+
+const retorno = new URLSearchParams(location.search);
+if (retorno.get('conectado')) toast('Loja Shopee conectada!');
+if (retorno.get('erro')) toast(retorno.get('erro'), 'error');
+if (location.search) history.replaceState(null, '', 'shopee.html');
+carregar();
+</script>
+</body>
+</html>
