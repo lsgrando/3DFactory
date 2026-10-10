@@ -137,7 +137,7 @@ function parseCookies(req) {
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // 8MB — cobre upload de imagem em base64 com folga
 
-function readBody(req) {
+function readBody(req, { raw = false } = {}) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -152,6 +152,7 @@ function readBody(req) {
     });
     req.on('end', () => {
       if (size > MAX_BODY_BYTES) return;
+      if (raw) return resolve(Buffer.concat(chunks).toString('utf8'));
       if (!chunks.length) return resolve({});
       try {
         resolve(JSON.parse(Buffer.concat(chunks)));
@@ -413,10 +414,149 @@ function estornarTodasDespesasDoPedido(pedido) {
   });
 }
 
+// Aprova o pedido: ele e os itens vão pra fila de produção. Usado pela aprovação manual e pela
+// importação de pedidos já pagos na Shopee.
+function aprovarPedido(pedido, formaPagamentoCombinada) {
+  pedido.status = 'na_fila';
+  pedido.aprovadoEm = new Date().toISOString();
+  pedido.formaPagamentoCombinada = formaPagamentoCombinada;
+  pedido.itens.forEach((it) => {
+    it.status = 'na_fila';
+    const patch = { status: 'na_fila' };
+    // A impressora sugerida no orçamento vira a atribuição real de produção — evita ter
+    // que escolher a mesma impressora de novo na Fila de produção depois de aprovar.
+    // Ainda pode ser trocada lá se a impressora sugerida não estiver disponível.
+    if (!it.impressoraId && it.orcamento && it.orcamento.impressoraSugeridaId) {
+      it.impressoraId = it.orcamento.impressoraSugeridaId;
+      patch.impressoraId = it.impressoraId;
+    }
+    itens.update(it.id, patch);
+  });
+  pedidos.update(pedido.id, {
+    status: pedido.status,
+    aprovadoEm: pedido.aprovadoEm,
+    formaPagamentoCombinada: pedido.formaPagamentoCombinada
+  });
+}
+
+// ---------- IMPORTAÇÃO DE PEDIDOS DA SHOPEE ----------
+// Pedido pago e ainda não enviado — é quando ele entra no sistema pra produção.
+const SHOPEE_STATUS_IMPORTAR = ['READY_TO_SHIP', 'PROCESSED'];
+const normalizarNome = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+// Liga o item da Shopee ao produto do catálogo quando o nome do anúncio é igual ao do produto
+// (e a variação da Shopee à variação dele, ou a única variação). Com a variação completa no
+// cadastro, o item já entra orçado pelo preço que o comprador pagou.
+function itemDoPedidoShopee(it) {
+  const produto = produtos.all().find((p) => normalizarNome(p.nome) === normalizarNome(it.item_name));
+  const vars = produto ? variacoes.porProduto(produto.id) : [];
+  const variacao = vars.find((v) => normalizarNome(v.nome) === normalizarNome(it.model_name)) || (vars.length === 1 ? vars[0] : null);
+  const item = {
+    produtoId: produto ? produto.id : null,
+    descricao: produto ? '' : [it.item_name, it.model_name].filter(Boolean).join(' — '),
+    variacao: variacao ? variacao.nome : (it.model_name || ''),
+    dimensoes: variacao ? variacao.dimensoes : '',
+    quantidade: Number(it.model_quantity_purchased || 1),
+    status: 'novo',
+    orcamento: null
+  };
+  if (variacao && variacao.filamentoIdSugerido && variacao.pesoGramas && variacao.tempoHoras) {
+    const filamentosResolvidos = resolverFilamentosDoOrcamento([{ filamentoId: variacao.filamentoIdSugerido, pesoGramas: variacao.pesoGramas }]);
+    if (filamentosResolvidos) {
+      const input = { tempoHoras: variacao.tempoHoras, impressoraId: variacao.impressoraIdSugerida };
+      const precoUnitario = Number(it.model_discounted_price || it.model_original_price || 0);
+      if (precoUnitario > 0) input.margemFixa = precoUnitario - montarOrcamento(input, filamentosResolvidos).custoTotal;
+      item.orcamento = montarOrcamento(input, filamentosResolvidos);
+      item.status = 'orcamento_pronto';
+    }
+  }
+  return item;
+}
+
+// Cria o pedido da Shopee (se pago e ainda não importado) ou aplica o cancelamento num já importado.
+function aplicarPedidoShopee(order) {
+  const existente = pedidos.findByIdPlataforma(order.order_sn);
+  if (existente) {
+    const podeCancelar = !['recusado', 'expirado', 'em_entrega', 'entregue'].includes(existente.status);
+    if (order.order_status === 'CANCELLED' && podeCancelar) {
+      const motivo = order.cancel_reason || order.buyer_cancel_reason;
+      pedidos.update(existente.id, { status: 'recusado', motivoRecusa: `Cancelado na Shopee${motivo ? `: ${motivo}` : ''}` });
+    }
+    return;
+  }
+  if (!SHOPEE_STATUS_IMPORTAR.includes(order.order_status)) return;
+  const itensPedido = (order.item_list || []).map(itemDoPedidoShopee);
+  const todosOrcados = itensPedido.length > 0 && itensPedido.every((it) => it.orcamento);
+  const observacoes = [
+    `Pedido Shopee ${order.order_sn}`,
+    order.message_to_seller ? `Mensagem do comprador: ${order.message_to_seller}` : '',
+    todosOrcados ? '' : 'Pago na Shopee — ligue os itens ao catálogo, orce e aprove.'
+  ].filter(Boolean).join('\n');
+  const pedido = pedidos.insert({
+    cliente: order.buyer_username || 'Comprador Shopee',
+    vendedor: 'Shopee',
+    observacoes,
+    createdAt: new Date((order.create_time || Date.now() / 1000) * 1000).toISOString(),
+    status: todosOrcados ? 'orcamento_pronto' : 'novo',
+    statusPagamento: 'pendente',
+    idPlataforma: order.order_sn,
+    itens: itensPedido
+  });
+  if (todosOrcados) aprovarPedido(pedido, 'Shopee');
+  console.log(`Shopee: pedido ${order.order_sn} importado como #${pedido.id}`);
+}
+
+async function sincronizarPedidosShopee(cfg, orderSns) {
+  const detalhes = await shopee.detalhesPedidos(cfg, orderSns);
+  detalhes.forEach(aplicarPedidoShopee);
+}
+
+// Rede de segurança pros avisos (push) que se perderem — ex.: servidor reiniciando num deploy.
+// A cada 15 min revisa os pedidos atualizados nas últimas 24h.
+const SHOPEE_SYNC_INTERVALO_MS = 15 * 60 * 1000;
+async function sincronizacaoPeriodicaShopee() {
+  const cfg = shopee.config();
+  if (!cfg || !shopeeConexao.get()) return;
+  try {
+    const ate = Math.floor(Date.now() / 1000);
+    const lista = await shopee.pedidosAtualizados(cfg, ate - 24 * 60 * 60, ate);
+    const relevantes = lista.filter((o) => SHOPEE_STATUS_IMPORTAR.includes(o.order_status) || o.order_status === 'CANCELLED');
+    if (relevantes.length) await sincronizarPedidosShopee(cfg, relevantes.map((o) => o.order_sn));
+  } catch (e) {
+    console.error('Shopee: falha na sincronização periódica —', e.message);
+  }
+}
+
 async function api(req, res, pathname, query) {
   const parts = pathname.split('/').filter(Boolean); // ['api', 'pedidos', '12', 'orcamento']
 
   try {
+    // Aviso (push) da Shopee — chamado pelos servidores da Shopee, sem sessão. O corpo só serve
+    // pra saber QUAL pedido mudou: os dados reais sempre vêm de nova consulta à API.
+    if (parts[1] === 'shopee' && parts[2] === 'push' && req.method === 'POST') {
+      const corpoBruto = await readBody(req, { raw: true });
+      // Sempre 2xx: a Shopee exige isso até no push de teste ao salvar a URL no console.
+      // Aviso com assinatura inválida é só descartado — nada nele é usado sem consultar a API.
+      res.writeHead(200);
+      res.end();
+      const cfg = shopee.config();
+      const proto = req.headers['x-forwarded-proto'] || 'http';
+      const urlCallback = `${proto}://${req.headers.host}${pathname}`;
+      if (!cfg || !shopee.assinaturaPushValida(cfg, urlCallback, corpoBruto, req.headers.authorization)) {
+        console.warn('Shopee: push com assinatura inválida ignorado');
+        return;
+      }
+      let aviso = {};
+      try { aviso = JSON.parse(corpoBruto || '{}'); } catch (e) { /* corpo inválido: nada a fazer */ }
+      const conexao = shopeeConexao.get();
+      const orderSn = aviso.data && aviso.data.ordersn;
+      // code 3 = mudança de status de pedido
+      if (aviso.code === 3 && orderSn && conexao && Number(aviso.shop_id) === conexao.shopId) {
+        sincronizarPedidosShopee(cfg, [orderSn]).catch((e) => console.error('Shopee: falha ao importar', orderSn, '—', e.message));
+      }
+      return;
+    }
+
     // ---------- AUTENTICAÇÃO ----------
     if (parts[1] === 'auth' && parts[2] === 'login' && req.method === 'POST') {
       const body = await readBody(req);
@@ -1289,26 +1429,7 @@ async function api(req, res, pathname, query) {
       if (!pedido) return sendJSON(res, 404, { error: 'Pedido não encontrado' });
       const body = await readBody(req);
       if (body.decisao === 'aprovado') {
-        pedido.status = 'na_fila';
-        pedido.aprovadoEm = new Date().toISOString();
-        pedido.formaPagamentoCombinada = body.formaPagamentoCombinada || '';
-        pedido.itens.forEach((it) => {
-          it.status = 'na_fila';
-          const patch = { status: 'na_fila' };
-          // A impressora sugerida no orçamento vira a atribuição real de produção — evita ter
-          // que escolher a mesma impressora de novo na Fila de produção depois de aprovar.
-          // Ainda pode ser trocada lá se a impressora sugerida não estiver disponível.
-          if (!it.impressoraId && it.orcamento && it.orcamento.impressoraSugeridaId) {
-            it.impressoraId = it.orcamento.impressoraSugeridaId;
-            patch.impressoraId = it.impressoraId;
-          }
-          itens.update(it.id, patch);
-        });
-        pedidos.update(pedido.id, {
-          status: pedido.status,
-          aprovadoEm: pedido.aprovadoEm,
-          formaPagamentoCombinada: pedido.formaPagamentoCombinada
-        });
+        aprovarPedido(pedido, body.formaPagamentoCombinada || '');
       } else if (body.decisao === 'recusado') {
         pedido.status = 'recusado';
         pedido.motivoRecusa = body.motivo || '';
@@ -1667,4 +1788,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Sistema de gestão rodando em http://localhost:${PORT}`);
+  sincronizacaoPeriodicaShopee();
+  setInterval(sincronizacaoPeriodicaShopee, SHOPEE_SYNC_INTERVALO_MS);
 });
