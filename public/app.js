@@ -420,7 +420,8 @@ const NAV_ITEMS = [
       { href: 'taxas-cartao.html', label: 'Taxas de Cartão' },
       { href: 'socios.html', label: 'Sócios' },
       { href: 'usuarios.html', label: 'Usuários' },
-      { href: 'shopee.html', label: 'Integração Shopee' }
+      { href: 'shopee.html', label: 'Integração Shopee' },
+      { href: 'manutencao-fotos.html', label: 'Otimização de Fotos' }
     ]
   }
 ];
