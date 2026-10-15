@@ -1778,7 +1778,15 @@ async function api(req, res, pathname, query) {
 
 const server = http.createServer((req, res) => {
   res.req = req;
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // Concatena em vez de usar base: req.url começando com "//" (comum em scanners) seria lido como
+  // outro host. O try evita que uma URL malformada derrube o processo.
+  let url;
+  try {
+    url = new URL(`http://localhost${req.url}`);
+  } catch (e) {
+    res.writeHead(400);
+    return res.end();
+  }
   const pathname = url.pathname;
   const query = Object.fromEntries(url.searchParams);
 
