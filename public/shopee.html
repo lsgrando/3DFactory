@@ -12,6 +12,7 @@
   <p class="subtitle">Conecta a loja da Shopee ao sistema pela Shopee Open Platform — base para importar os pedidos automaticamente.</p>
 
   <div class="card" id="status-shopee">Carregando...</div>
+  <div class="card" id="carteira-shopee" style="margin-top:16px;display:none"></div>
 </main>
 
 <script src="app.js"></script>
@@ -39,12 +40,36 @@ async function carregar() {
     const { url } = await apiGet('/api/shopee/conectar');
     window.location.href = url;
   });
+  if (s.carteira) renderCarteira(s.carteira);
   const btnDesconectar = document.getElementById('btn-desconectar');
   if (btnDesconectar) btnDesconectar.addEventListener('click', async () => {
     if (!confirm('Desconectar a loja Shopee do sistema?')) return;
     await apiPost('/api/shopee/desconectar', {});
     toast('Loja desconectada.');
     carregar();
+  });
+}
+
+// Carteira Shopee espelhada na conta financeira: os dois saldos devem bater.
+async function renderCarteira(c) {
+  const el = document.getElementById('carteira-shopee');
+  const contas = await apiGet('/api/contas-financeiras');
+  const bate = c.saldoShopee == null || Math.abs(c.saldoSistema - c.saldoShopee) < 0.01;
+  el.style.display = '';
+  el.innerHTML = `<h3 style="margin-top:0">Carteira Shopee</h3>
+    <p>Saldo no sistema (${escapeHtml(c.contaNome || '—')}): <b>${money(c.saldoSistema)}</b> ·
+      Saldo na Shopee: <b>${c.saldoShopee == null ? '—' : money(c.saldoShopee)}</b>
+      ${bate ? '' : '<span style="color:var(--red)"> — os saldos não batem</span>'}</p>
+    <p class="muted">Rendas de pedidos, devoluções, recargas de ADS e saques são lançados automaticamente a cada 15 min.</p>
+    <div class="field"><label>Conta que recebe os saques</label>
+      <select id="conta-saque">
+        <option value="">— não configurada —</option>
+        ${contas.map((ct) => `<option value="${ct.id}" ${ct.id === c.contaSaqueId ? 'selected' : ''}>${escapeHtml(ct.nome)}</option>`).join('')}
+      </select>
+    </div>`;
+  document.getElementById('conta-saque').addEventListener('change', async (e) => {
+    await apiPatch('/api/shopee/carteira', { contaSaqueId: e.target.value ? Number(e.target.value) : null });
+    toast('Conta dos saques salva.');
   });
 }
 

@@ -28,7 +28,7 @@ const {
 const { calcularPrecificacao } = require('./lib/pricing');
 const { hashPassword, verifyPassword } = require('./lib/auth');
 const shopee = require('./lib/shopee');
-const { shopeeConexao, shopeePedidosImportados } = require('./lib/db');
+const { shopeeConexao, shopeePedidosImportados, shopeeCarteira } = require('./lib/db');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -513,6 +513,163 @@ async function sincronizarPedidosShopee(cfg, orderSns) {
   detalhes.forEach(aplicarPedidoShopee);
 }
 
+// ---------- CARTEIRA SHOPEE ----------
+// A carteira da Shopee é espelhada na conta financeira "Carteira Shopee": cada movimentação vira
+// um lançamento, então o saldo da conta acompanha o saldo da Shopee. A renda de um pedido só cai
+// na carteira depois que o comprador recebe — é o momento em que o pedido fica pago.
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function lancarNaCarteira(contaId, { tipo, valor, categoria, categoriaDetalhe, descricao, pedidoId, data }) {
+  const mov = movimentacoesFinanceiras.insert({
+    tipo, valor, contaId, formaPagamento: 'Shopee', categoria, categoriaDetalhe: categoriaDetalhe || null, descricao,
+    pedidoId: pedidoId || null, responsavelId: null, reembolsado: false, reembolsoId: null, estornado: false, estornoDe: null,
+    data, criadoEm: new Date().toISOString()
+  });
+  contasFinanceiras.ajustarSaldo(contaId, tipo === 'entrada' ? valor : -valor);
+  return mov;
+}
+
+// Renda liberada de um pedido. Se o pedido existe, está orçado e o valor líquido cabe no saldo
+// devedor, quita o pedido pelo valor cheio e lança a diferença como "Taxa Shopee" (mesma lógica
+// da taxa de cartão). Senão vira entrada avulsa — o saldo da conta continua batendo.
+function lancarRendaPedidoShopee(contaId, t, data) {
+  const liquido = t.amount;
+  const pedido = pedidos.findByIdPlataforma(t.order_sn);
+  const saldoDevedor = pedido
+    ? round2(calcularValorPedido(pedido) - pedido.pagamentos.filter((p) => !p.estornado).reduce((s, p) => s + p.valor + (p.desconto || 0), 0))
+    : 0;
+  if (!pedido || saldoDevedor <= 0 || liquido > saldoDevedor + 0.01) {
+    lancarNaCarteira(contaId, {
+      tipo: 'entrada', valor: liquido, categoria: 'Venda', pedidoId: pedido && pedido.id, data,
+      descricao: `Renda Shopee — pedido ${t.order_sn}${pedido ? ` (#${pedido.id})` : ''}`
+    });
+    return;
+  }
+  const mov = lancarNaCarteira(contaId, {
+    tipo: 'entrada', valor: saldoDevedor, categoria: 'Venda', pedidoId: pedido.id, data,
+    descricao: `Venda — pedido #${pedido.id} (${pedido.cliente})`
+  });
+  const taxa = round2(saldoDevedor - liquido);
+  const taxaMov = taxa > 0
+    ? lancarNaCarteira(contaId, { tipo: 'saida', valor: taxa, categoria: 'Taxa Shopee', pedidoId: pedido.id, data, descricao: `Taxa Shopee — pedido #${pedido.id} (${t.order_sn})` })
+    : null;
+  pagamentosPedido.insert({
+    pedidoId: pedido.id, valor: saldoDevedor, desconto: 0, formaPagamento: 'Shopee', contaId,
+    movimentacaoFinanceiraId: mov.id, dataPagamento: data, valorLiquido: liquido,
+    taxaMovimentacaoFinanceiraId: taxaMov ? taxaMov.id : null
+  });
+  recomputeStatusPagamento(pedidos.findById(pedido.id));
+}
+
+function lancarMovimentacaoCarteira(carteira, t) {
+  const data = new Date(t.create_time * 1000).toISOString();
+  const contaId = carteira.contaId;
+  const valor = round2(Math.abs(t.amount));
+  if (!valor) return; // ex.: WITHDRAWAL_COMPLETED vem com valor 0 (o débito foi no WITHDRAWAL_CREATED)
+  if (t.order_sn && t.amount > 0) return lancarRendaPedidoShopee(contaId, t, data);
+  if (t.order_sn) {
+    const pedido = pedidos.findByIdPlataforma(t.order_sn);
+    return lancarNaCarteira(contaId, {
+      tipo: 'saida', valor, categoria: 'Devolução Shopee', pedidoId: pedido && pedido.id, data,
+      descricao: `Custo de devolução/ajuste — pedido ${t.order_sn}${pedido ? ` (#${pedido.id})` : ''}`
+    });
+  }
+  if (t.transaction_type === 'SPM_DEDUCT') {
+    return lancarNaCarteira(contaId, { tipo: 'saida', valor, categoria: 'Anúncios pagos', data, descricao: t.description || 'Recarga de ADS na Shopee' });
+  }
+  if (t.transaction_type === 'WITHDRAWAL_CREATED') {
+    const destino = carteira.contaSaqueId && contasFinanceiras.findById(carteira.contaSaqueId);
+    lancarNaCarteira(contaId, {
+      tipo: 'saida', valor, categoria: 'Outro', data,
+      categoriaDetalhe: destino ? `Transferência para ${destino.nome}` : 'Saque Shopee',
+      descricao: destino ? `Saque da Carteira Shopee para ${destino.nome}` : 'Saque da Carteira Shopee (conta de destino não configurada)'
+    });
+    if (destino) {
+      movimentacoesFinanceiras.insert({
+        tipo: 'entrada', valor, contaId: destino.id, formaPagamento: 'Shopee', categoria: 'Outro',
+        categoriaDetalhe: 'Transferência de Carteira Shopee', descricao: 'Saque da Carteira Shopee', pedidoId: null,
+        responsavelId: null, reembolsado: false, reembolsoId: null, estornado: false, estornoDe: null,
+        data, criadoEm: new Date().toISOString()
+      });
+      contasFinanceiras.ajustarSaldo(destino.id, valor);
+    }
+    return;
+  }
+  // Tipo ainda não visto: lança mesmo assim pra conta não descolar do saldo da Shopee.
+  lancarNaCarteira(contaId, {
+    tipo: t.amount > 0 ? 'entrada' : 'saida', valor, categoria: 'Outro', data,
+    descricao: `Shopee: ${t.description || t.transaction_type} (${t.transaction_type})`
+  });
+}
+
+// Na primeira sincronização cria a conta a partir do último saque (o que veio antes já foi
+// lançado na planilha): procura semana a semana, até 1 ano pra trás, o saque mais recente.
+async function iniciarCarteiraShopee(cfg, agora) {
+  const SEMANA = 7 * 24 * 60 * 60;
+  let inicio = null;
+  let saldoInicial = 0;
+  let maisAntiga = null;
+  for (let ate = agora; ate > agora - 365 * 24 * 60 * 60 && inicio === null; ate -= SEMANA) {
+    const lista = await shopee.movimentacoesCarteira(cfg, ate - SEMANA, ate);
+    const saque = lista.filter((t) => t.transaction_type === 'WITHDRAWAL_CREATED').pop();
+    if (saque) {
+      inicio = saque.create_time;
+      saldoInicial = saque.current_balance;
+    } else if (lista.length) {
+      maisAntiga = lista[0];
+    }
+  }
+  if (inicio === null && maisAntiga) {
+    inicio = maisAntiga.create_time - 1;
+    saldoInicial = round2(maisAntiga.current_balance - maisAntiga.amount);
+  }
+  if (inicio === null) inicio = agora;
+  // Reaproveita a conta "Carteira Shopee" já cadastrada (vem no banco inicial) e, se o saldo dela
+  // não bater com o da Shopee no corte, lança um ajuste visível pra partir do valor certo.
+  const contas = contasFinanceiras.all();
+  let conta = contas.find((c) => normalizarNome(c.nome) === normalizarNome('Carteira Shopee'));
+  if (conta) {
+    const ajuste = round2(saldoInicial - conta.saldoAtual);
+    if (ajuste) {
+      lancarNaCarteira(conta.id, {
+        tipo: ajuste > 0 ? 'entrada' : 'saida', valor: Math.abs(ajuste), categoria: 'Outro', categoriaDetalhe: 'Ajuste de saldo',
+        data: new Date(inicio * 1000).toISOString(),
+        descricao: `Ajuste para o saldo da carteira Shopee no início da sincronização (R$ ${saldoInicial.toFixed(2)})`
+      });
+    }
+  } else {
+    conta = contasFinanceiras.insert({ nome: 'Carteira Shopee', tipo: 'carteira_digital', saldoInicial });
+  }
+  // Os saques da Shopee caem no Inter — pré-seleciona se houver uma conta só com esse nome.
+  const inter = contas.filter((c) => c.id !== conta.id && /inter/i.test(c.nome));
+  console.log(`Shopee: carteira sincronizada na conta #${conta.id} a partir de ${new Date(inicio * 1000).toISOString()} (saldo ${saldoInicial})`);
+  return shopeeCarteira.criar({ contaId: conta.id, inicio, contaSaqueId: inter.length === 1 ? inter[0].id : null });
+}
+
+async function sincronizarCarteiraShopee(cfg) {
+  const agora = Math.floor(Date.now() / 1000);
+  const carteira = shopeeCarteira.get() || (await iniciarCarteiraShopee(cfg, agora));
+  // Volta 1h em relação ao cursor pra não perder movimentação registrada com atraso; a repetida
+  // é descartada pelo transaction_id.
+  const lista = await shopee.movimentacoesCarteira(cfg, Math.max(carteira.inicio, carteira.cursor - 3600), agora);
+  let cursor = agora;
+  let lancadas = 0;
+  for (const t of lista) {
+    if (t.create_time <= carteira.inicio || shopeeCarteira.jaImportada(t.transaction_id)) continue;
+    // Pendente (ex.: saque em processamento) só é lançada quando concluir — o cursor não passa dela.
+    if (t.status !== 'COMPLETED') {
+      cursor = Math.min(cursor, t.create_time);
+      continue;
+    }
+    lancarMovimentacaoCarteira(carteira, t);
+    shopeeCarteira.registrar(t.transaction_id);
+    lancadas++;
+  }
+  const ultima = lista[lista.length - 1];
+  shopeeCarteira.update({ cursor, ...(ultima ? { saldoShopee: ultima.current_balance } : {}) });
+  if (lancadas) console.log(`Shopee: ${lancadas} movimentação(ões) da carteira lançada(s)`);
+}
+
 // Rede de segurança pros avisos (push) que se perderem — ex.: servidor reiniciando num deploy.
 // A cada 15 min revisa os pedidos atualizados nas últimas 24h.
 const SHOPEE_SYNC_INTERVALO_MS = 15 * 60 * 1000;
@@ -526,6 +683,12 @@ async function sincronizacaoPeriodicaShopee() {
     if (relevantes.length) await sincronizarPedidosShopee(cfg, relevantes.map((o) => o.order_sn));
   } catch (e) {
     console.error('Shopee: falha na sincronização periódica —', e.message);
+  }
+  // Depois dos pedidos, pra renda de um pedido recém-importado já achar o pedido.
+  try {
+    await sincronizarCarteiraShopee(cfg);
+  } catch (e) {
+    console.error('Shopee: falha na sincronização da carteira —', e.message);
   }
 }
 
@@ -1738,6 +1901,16 @@ async function api(req, res, pathname, query) {
             status.erro = e.message;
           }
         }
+        const carteira = shopeeCarteira.get();
+        if (carteira) {
+          const conta = contasFinanceiras.findById(carteira.contaId);
+          status.carteira = {
+            contaNome: conta ? conta.nome : null,
+            saldoSistema: conta ? conta.saldoAtual : null,
+            saldoShopee: carteira.saldoShopee,
+            contaSaqueId: carteira.contaSaqueId
+          };
+        }
         return sendJSON(res, 200, status);
       }
       if (usuarioAtual.papel !== 'admin') {
@@ -1762,6 +1935,13 @@ async function api(req, res, pathname, query) {
         }
         res.writeHead(302, { Location: destino });
         return res.end();
+      }
+      if (parts[2] === 'carteira' && req.method === 'PATCH') {
+        if (!shopeeCarteira.get()) return sendJSON(res, 400, { error: 'Carteira Shopee ainda não sincronizada' });
+        const body = await readBody(req);
+        const contaSaque = body.contaSaqueId ? contasFinanceiras.findById(body.contaSaqueId) : null;
+        if (body.contaSaqueId && !contaSaque) return sendJSON(res, 400, { error: 'Conta inválida' });
+        return sendJSON(res, 200, shopeeCarteira.update({ contaSaqueId: contaSaque ? contaSaque.id : null }));
       }
       if (parts[2] === 'desconectar' && req.method === 'POST') {
         shopeeConexao.remover();
