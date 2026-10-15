@@ -1754,10 +1754,10 @@ async function api(req, res, pathname, query) {
         // Navegação do navegador vinda da Shopee — responde com redirect pra página, não JSON.
         let destino = '/shopee.html?conectado=1';
         try {
-          if (!query.code || !query.shop_id) throw new Error('Autorização não concluída na Shopee');
-          await shopee.conectar(cfg, query.code, Number(query.shop_id));
+          if (!query.code || (!query.shop_id && !query.main_account_id)) throw new Error('Autorização não concluída na Shopee');
+          await shopee.conectar(cfg, query.code, Number(query.shop_id) || null, Number(query.main_account_id) || null);
         } catch (e) {
-          console.error(e);
+          console.error(e, '— parâmetros recebidos:', Object.keys(query).join(', ') || '(nenhum)');
           destino = `/shopee.html?erro=${encodeURIComponent(e.message)}`;
         }
         res.writeHead(302, { Location: destino });
