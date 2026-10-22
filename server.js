@@ -954,27 +954,35 @@ async function api(req, res, pathname, query) {
         titulo: i.titleTranslated || i.title || '',
         tempoHoras: Math.round((Number(i.prediction || 0) / 3600) * 100) / 100,
         pesoGramas: Number(i.weight || 0),
+        imagemUrl: i.cover || design.coverUrl || null,
         filamentos: (i.instanceFilaments || []).map((f) => ({ tipo: f.type, cor: f.color, gramas: Number(f.usedG || 0) }))
       }));
       const padrao = (perfilDoLink && perfis.find((p) => String(p.id) === perfilDoLink[1]))
         || perfis.find((p) => p.id === design.defaultInstanceId)
         || perfis[0];
-      // O CDN da Bambu redimensiona a imagem na hora — a capa original passa de 2 MB.
-      let imagem = null;
-      if (design.coverUrl) {
-        try {
-          const img = await fetch(`${design.coverUrl}?x-oss-process=image/resize,w_900`, { signal: AbortSignal.timeout(15000) });
-          if (img.ok) imagem = `data:${img.headers.get('content-type') || 'image/jpeg'};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}`;
-        } catch (e) { /* sem imagem: o resto do orçamento ainda serve */ }
-      }
       return sendJSON(res, 200, {
         modeloId: design.id,
         nome: design.titleTranslated || design.title || '',
         link: `https://makerworld.com/pt/models/${design.id}`,
-        imagem,
         perfis,
         perfilPadraoId: padrao ? padrao.id : null
       });
+    }
+    // Baixa a foto do perfil escolhido pra salvar no produto. Só aceita o CDN do MakerWorld — sem
+    // isso o servidor buscaria qualquer URL que chegasse aqui.
+    if (parts[1] === 'makerworld' && parts[2] === 'imagem' && req.method === 'POST') {
+      const body = await readBody(req);
+      let url;
+      try { url = new URL(String(body.url || '')); } catch (e) { url = null; }
+      if (!url || url.protocol !== 'https:' || url.hostname !== 'makerworld.bblmw.com') {
+        return sendJSON(res, 400, { error: 'Imagem inválida' });
+      }
+      // O CDN da Bambu redimensiona a imagem na hora — a capa original passa de 2 MB.
+      url.search = '?x-oss-process=image/resize,w_900';
+      const img = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!img.ok) return sendJSON(res, 502, { error: `MakerWorld respondeu ${img.status} para a imagem` });
+      const tipo = img.headers.get('content-type') || 'image/jpeg';
+      return sendJSON(res, 200, { imagem: `data:${tipo};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}` });
     }
 
     // ---------- PRODUTOS ----------

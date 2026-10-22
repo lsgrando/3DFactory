@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Tabela de preços — Ateliê 3D Home</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  body { background: #ece7e2; }
+  .print-toolbar {
+    max-width: 880px;
+    margin: 18px auto 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .print-sheet {
+    max-width: 880px;
+    margin: 16px auto 48px;
+    background: #fff;
+    padding: 48px 56px;
+    box-shadow: 0 2px 18px rgba(0,0,0,.12);
+    font-size: 14px;
+    color: #2b2320;
+    border-radius: 4px;
+  }
+  .doc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    border-bottom: 2px solid #c9a27a;
+    padding-bottom: 18px;
+    margin-bottom: 26px;
+  }
+  .doc-header img { height: 92px; width: auto; }
+  .doc-header .meta { text-align: right; }
+  .doc-header .meta h1 { margin: 0; font-size: 22px; color: #6b4a36; letter-spacing: .02em; }
+  .doc-header .meta .num { font-size: 13px; color: #8a7a6c; margin-top: 4px; }
+  table.doc-itens { width: 100%; border-collapse: collapse; }
+  table.doc-itens th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: #8a7a6c;
+    border-bottom: 2px solid #e6d9cd;
+    padding: 8px 6px;
+  }
+  table.doc-itens td { padding: 8px 6px; border-bottom: 1px solid #f0e6dc; vertical-align: middle; }
+  table.doc-itens tr { break-inside: avoid; }
+  table.doc-itens td.valor, table.doc-itens th.valor { text-align: right; white-space: nowrap; }
+  table.doc-itens img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; display: block; }
+  .doc-erro { padding: 40px; text-align: center; color: var(--muted); }
+  @media print {
+    .no-print { display: none !important; }
+    body { background: #fff; }
+    .print-sheet { box-shadow: none !important; margin: 0 !important; border-radius: 0; max-width: none; padding: 0; }
+    @page { margin: 14mm; }
+  }
+</style>
+</head>
+<body>
+
+<div class="print-toolbar no-print">
+  <button type="button" onclick="window.print()">🖨️ Imprimir / Salvar como PDF</button>
+  <button type="button" class="secondary" onclick="window.close()">Fechar</button>
+</div>
+
+<div class="print-sheet" id="sheet"></div>
+
+<script src="app.js"></script>
+<script>
+// Os dados vêm da tela Orçamento MakerWorld (gravados no localStorage ao clicar em Exportar PDF).
+function load() {
+  const sheet = document.getElementById('sheet');
+  let dados = null;
+  try { dados = JSON.parse(localStorage.getItem('orcamentoMakerworldExport')); } catch (e) { /* tratado abaixo */ }
+  if (!dados || !dados.linhas || !dados.linhas.length) {
+    sheet.innerHTML = '<p class="doc-erro">Nada para exportar — volte à tela Orçamento MakerWorld e clique em Exportar PDF.</p>';
+    return;
+  }
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  sheet.innerHTML = `
+    <div class="doc-header">
+      <img src="assets/logo-atelie.jpeg" alt="Ateliê 3D Home" />
+      <div class="meta">
+        <h1>Tabela de preços</h1>
+        <div class="num">${hoje}</div>
+      </div>
+    </div>
+    <table class="doc-itens">
+      <thead><tr>
+        <th></th><th>Peça</th><th class="valor">Custo</th>
+        ${dados.margens.map(m => `<th class="valor">+${m}%</th>`).join('')}
+      </tr></thead>
+      <tbody>
+        ${dados.linhas.map(l => `
+          <tr>
+            <td>${l.imagem ? `<img src="${escapeAttr(l.imagem)}" />` : ''}</td>
+            <td>${escapeHtml(l.nome)}</td>
+            <td class="valor">${l.custo == null ? '—' : money(l.custo)}</td>
+            ${dados.margens.map(m => `<td class="valor">${l.custo == null ? '—' : money(l.custo * (1 + m / 100))}</td>`).join('')}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+load();
+</script>
+</body>
+</html>

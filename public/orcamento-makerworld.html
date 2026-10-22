@@ -15,8 +15,10 @@
     <div class="field" style="min-width:100%"><label>Links do MakerWorld</label>
       <textarea id="links" rows="4" placeholder="https://makerworld.com/pt/models/3215239"></textarea>
     </div>
-    <div class="row" style="margin-top:10px">
+    <div class="row" style="margin-top:10px;align-items:center">
       <button type="button" id="btn-buscar">Buscar modelos</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:14px;color:inherit"><input type="checkbox" id="todos-perfis" style="width:auto" /> Importar todos os perfis de cada link (uma linha por perfil)</label>
+      <button type="button" class="secondary" id="btn-exportar" style="margin-left:auto">📄 Exportar PDF</button>
     </div>
   </div>
 
@@ -65,6 +67,7 @@ function atualizarPreview(div) {
     div._filCtrl.getValue(),
     div.querySelector('[name="impressoraId"]').value
   );
+  div._custo = custo; // lido pelo Exportar PDF
   const preview = div.querySelector('.preview-custo');
   if (custo == null) { preview.innerHTML = '<span class="muted">Informe peso e tempo pra calcular.</span>'; return; }
   preview.innerHTML = `
@@ -84,6 +87,10 @@ function aplicarPerfil(div, perfil) {
   div.querySelector('[name="pesoGramas"]').value = perfil.pesoGramas || '';
   div.querySelector('[name="tempoHoras"]').value = perfil.tempoHoras || '';
   div.querySelector('.materiais').innerHTML = materiaisHtml(perfil);
+  // Miniatura direto do CDN do MakerWorld, já reduzida — a foto em tamanho maior só é baixada ao criar o produto.
+  div.querySelector('.miniatura').src = perfil.imagemUrl ? `${perfil.imagemUrl}?x-oss-process=image/resize,w_200` : '';
+  div.querySelector('.miniatura').style.display = perfil.imagemUrl ? '' : 'none';
+  div.querySelector('.sem-imagem').style.display = perfil.imagemUrl ? 'none' : 'flex';
   atualizarPreview(div);
 }
 
@@ -96,8 +103,8 @@ function addLinha(modelo) {
     `<option value="${p.id}" ${p.id === modelo.perfilPadraoId ? 'selected' : ''}>${escapeHtml(p.titulo)} — ${p.pesoGramas}g · ${p.tempoHoras}h</option>`
   ).join('');
   div.innerHTML = `
-    <button type="button" class="danger btn-remove-item" title="Remover da lista">✕</button>
-    ${modelo.imagem ? `<img class="thumb-lg" src="${escapeAttr(modelo.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
+    <img class="thumb-lg miniatura" />
+    <div class="thumb-lg sem-imagem" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>
     <div style="flex:1;min-width:280px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
       <div class="field" style="min-width:100%"><label>Nome do produto</label><input name="nome" value="${escapeAttr(modelo.nome)}" /></div>
       <div class="field" style="min-width:100%"><label>Link</label><a href="${escapeAttr(safeUrl(modelo.link))}" target="_blank" rel="noopener">${escapeHtml(modelo.link)}</a></div>
@@ -116,6 +123,7 @@ function addLinha(modelo) {
       <div class="preview-custo" style="min-width:100%"></div>
       <div class="field"><label>Preço de venda (R$)</label><input name="precoVenda" type="number" step="0.01" /></div>
       <div class="acoes-produto"><button type="button" class="btn-criar-produto">Criar produto</button></div>
+      <button type="button" class="danger btn-excluir-linha">Excluir</button>
     </div>
   `;
   div._filCtrl = wireSearchSelect(div.querySelector('.filamento-wrap'), filamentoItens(), () => div._filCtrl && atualizarPreview(div), '', 'Nenhum (R$' + CUSTO_FILAMENTO_PADRAO + '/kg)');
@@ -130,7 +138,8 @@ function addLinha(modelo) {
     e.preventDefault();
     div.querySelector('[name="precoVenda"]').value = btn.dataset.valor;
   });
-  div.querySelector('.btn-remove-item').addEventListener('click', () => div.remove());
+  // Só tira da lista desta tela — se o produto já foi criado, ele continua em Produtos.
+  div.querySelector('.btn-excluir-linha').addEventListener('click', () => div.remove());
   div.querySelector('.btn-criar-produto').addEventListener('click', () => criarProduto(div, modelo, perfilAtual()));
   document.getElementById('lista').appendChild(div);
   if (perfilAtual()) aplicarPerfil(div, perfilAtual());
@@ -143,7 +152,8 @@ async function criarProduto(div, modelo, perfil) {
   const btn = div.querySelector('.btn-criar-produto');
   btn.disabled = true;
   try {
-    const produto = await apiPost('/api/produtos', { nome, modeloRef: modelo.link, imagemBase64: modelo.imagem || undefined });
+    const imagem = perfil && perfil.imagemUrl ? (await apiPost('/api/makerworld/imagem', { url: perfil.imagemUrl })).imagem : undefined;
+    const produto = await apiPost('/api/produtos', { nome, modeloRef: modelo.link, imagemBase64: imagem });
     await apiPost('/api/variacoes', {
       produtoId: produto.id,
       nome: 'Único',
@@ -172,7 +182,19 @@ document.getElementById('btn-buscar').addEventListener('click', async () => {
   for (let i = 0; i < links.length; i++) {
     btn.textContent = `Buscando ${i + 1} de ${links.length}...`;
     try {
-      addLinha(await apiPost('/api/makerworld/consultar', { url: links[i] }));
+      const modelo = await apiPost('/api/makerworld/consultar', { url: links[i] });
+      if (!document.getElementById('todos-perfis').checked) {
+        addLinha(modelo);
+        continue;
+      }
+      // Uma linha por perfil: o nome vira o do perfil sem a parte de configuração
+      // ("Square SnowFlake Ornament - 0.2mm layer, ..." → "Square SnowFlake Ornament"),
+      // pra não criar vários produtos com o mesmo nome.
+      modelo.perfis.forEach((p) => addLinha(Object.assign({}, modelo, {
+        nome: p.titulo.split(' - ')[0].trim() || modelo.nome,
+        link: `${modelo.link}#profileId-${p.id}`,
+        perfilPadraoId: p.id
+      })));
     } catch (e) {
       falhas.push(links[i]);
     }
@@ -181,6 +203,23 @@ document.getElementById('btn-buscar').addEventListener('click', async () => {
   btn.textContent = 'Buscar modelos';
   // Deixa no campo só o que falhou, pra corrigir e tentar de novo.
   textarea.value = falhas.join('\n');
+});
+
+// A página de impressão lê as linhas do localStorage — elas só existem nesta tela, não no servidor.
+document.getElementById('btn-exportar').addEventListener('click', () => {
+  const linhas = [...document.querySelectorAll('#lista .item-block')].map(div => ({
+    nome: div.querySelector('[name="nome"]').value,
+    imagem: div.querySelector('.miniatura').getAttribute('src') || '',
+    custo: div._custo
+  }));
+  if (!linhas.length) { toast('Busque ao menos um modelo antes de exportar.', 'error'); return; }
+  try {
+    localStorage.setItem('orcamentoMakerworldExport', JSON.stringify({ margens: MARGENS_PREVIEW, linhas }));
+  } catch (e) {
+    toast('Não foi possível preparar a exportação neste navegador.', 'error');
+    return;
+  }
+  window.open('orcamento-makerworld-imprimir.html', '_blank');
 });
 
 async function load() {
