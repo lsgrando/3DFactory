@@ -933,6 +933,50 @@ async function api(req, res, pathname, query) {
       return sendJSON(res, 200, { ok: true });
     }
 
+    // ---------- MAKERWORLD (orçamento rápido a partir de link) ----------
+    // A página do MakerWorld fica atrás do Cloudflare, mas a API pública da Bambu devolve os mesmos
+    // dados: cada "instance" é um perfil de impressão já fatiado, com tempo (s) e peso (g) estimados.
+    if (parts[1] === 'makerworld' && parts[2] === 'consultar' && req.method === 'POST') {
+      const body = await readBody(req);
+      const link = String(body.url || '').trim();
+      const modelo = /makerworld\.com\/(?:[a-z-]+\/)?models\/(\d+)/i.exec(link);
+      if (!modelo) return sendJSON(res, 400, { error: 'Link do MakerWorld inválido' });
+      const perfilDoLink = /profileId-(\d+)/i.exec(link);
+      const resp = await fetch(`https://api.bambulab.com/v1/design-service/design/${modelo[1]}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!resp.ok) return sendJSON(res, 502, { error: `MakerWorld respondeu ${resp.status} para o modelo ${modelo[1]}` });
+      const design = await resp.json();
+      // O "#profileId-NNN" do link do MakerWorld é o id da instance (não o campo profileId dela).
+      const perfis = (design.instances || []).map((i) => ({
+        id: i.id,
+        titulo: i.titleTranslated || i.title || '',
+        tempoHoras: Math.round((Number(i.prediction || 0) / 3600) * 100) / 100,
+        pesoGramas: Number(i.weight || 0),
+        filamentos: (i.instanceFilaments || []).map((f) => ({ tipo: f.type, cor: f.color, gramas: Number(f.usedG || 0) }))
+      }));
+      const padrao = (perfilDoLink && perfis.find((p) => String(p.id) === perfilDoLink[1]))
+        || perfis.find((p) => p.id === design.defaultInstanceId)
+        || perfis[0];
+      // O CDN da Bambu redimensiona a imagem na hora — a capa original passa de 2 MB.
+      let imagem = null;
+      if (design.coverUrl) {
+        try {
+          const img = await fetch(`${design.coverUrl}?x-oss-process=image/resize,w_900`, { signal: AbortSignal.timeout(15000) });
+          if (img.ok) imagem = `data:${img.headers.get('content-type') || 'image/jpeg'};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}`;
+        } catch (e) { /* sem imagem: o resto do orçamento ainda serve */ }
+      }
+      return sendJSON(res, 200, {
+        modeloId: design.id,
+        nome: design.titleTranslated || design.title || '',
+        link: `https://makerworld.com/pt/models/${design.id}`,
+        imagem,
+        perfis,
+        perfilPadraoId: padrao ? padrao.id : null
+      });
+    }
+
     // ---------- PRODUTOS ----------
     if (parts[1] === 'produtos' && parts.length === 2 && req.method === 'GET') {
       return sendJSON(res, 200, produtos.all());

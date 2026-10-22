@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Orçamento MakerWorld — Impressão 3D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav id="nav"></nav>
+<main>
+  <h1>Orçamento MakerWorld</h1>
+  <p class="subtitle">Cole um ou vários links do MakerWorld (um por linha) pra puxar nome, imagem, peso e tempo do perfil de impressão e ver a prévia de preço. Tudo pode ser ajustado antes de criar o produto.</p>
+
+  <div class="card">
+    <div class="field" style="min-width:100%"><label>Links do MakerWorld</label>
+      <textarea id="links" rows="4" placeholder="https://makerworld.com/pt/models/3215239"></textarea>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="btn-buscar">Buscar modelos</button>
+    </div>
+  </div>
+
+  <div id="lista"></div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderNav('orcamento-makerworld.html');
+let filamentosCache = [];
+let impressorasCache = [];
+let paramsCache = {};
+let linhaSeq = 0;
+
+// Mesmos padrões e cálculo da prévia de custo em Produtos (produtos.html).
+const CUSTO_FILAMENTO_PADRAO = 120; // R$/kg usado quando nenhum filamento é escolhido
+const POTENCIA_PADRAO = 200; // W usado quando nenhuma impressora é escolhida
+const MARGENS_PREVIEW = [100, 150, 200, 250, 300];
+
+function calcularCusto(pesoGramas, tempoHoras, filamentoId, impressoraId) {
+  if (!pesoGramas || !tempoHoras) return null;
+  const filamento = filamentoId ? filamentosCache.find(f => f.id === Number(filamentoId)) : null;
+  const impressora = impressoraId ? impressorasCache.find(i => i.id === Number(impressoraId)) : null;
+  const precoPorKg = filamento ? filamento.precoPorKg : CUSTO_FILAMENTO_PADRAO;
+  const potenciaW = impressora ? impressora.potenciaW : POTENCIA_PADRAO;
+  const tarifaKwh = paramsCache.tarifaKwh || 0;
+  const custoFilamento = (precoPorKg / 1000) * Number(pesoGramas);
+  const custoEnergia = ((potenciaW * Number(tempoHoras)) / 1000) * tarifaKwh;
+  return custoFilamento + custoEnergia;
+}
+
+function filamentoItens() {
+  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
+}
+
+function materiaisHtml(perfil) {
+  return (perfil.filamentos || []).map(f =>
+    `<span style="white-space:nowrap"><span class="color-swatch" style="background:${escapeAttr(f.cor)}"></span>${escapeHtml(f.tipo)} ${f.gramas}g</span>`
+  ).join(' · ');
+}
+
+function atualizarPreview(div) {
+  const custo = calcularCusto(
+    div.querySelector('[name="pesoGramas"]').value,
+    div.querySelector('[name="tempoHoras"]').value,
+    div._filCtrl.getValue(),
+    div.querySelector('[name="impressoraId"]').value
+  );
+  const preview = div.querySelector('.preview-custo');
+  if (custo == null) { preview.innerHTML = '<span class="muted">Informe peso e tempo pra calcular.</span>'; return; }
+  preview.innerHTML = `
+    <div class="price-box" style="margin-top:0">
+      <div>Custo estimado: <b>${money(custo)}</b></div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:16px">
+        ${MARGENS_PREVIEW.map(m => {
+          const v = custo * (1 + m / 100);
+          return `<div><span class="muted">+${m}%</span><br><b>${money(v)}</b><br><a href="#" class="btn-usar-margem" data-valor="${v.toFixed(2)}" style="font-size:11px">usar como preço de venda</a></div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function aplicarPerfil(div, perfil) {
+  div.querySelector('[name="pesoGramas"]').value = perfil.pesoGramas || '';
+  div.querySelector('[name="tempoHoras"]').value = perfil.tempoHoras || '';
+  div.querySelector('.materiais').innerHTML = materiaisHtml(perfil);
+  atualizarPreview(div);
+}
+
+function addLinha(modelo) {
+  const div = document.createElement('div');
+  div.className = 'item-block';
+  div.style.alignItems = 'flex-start';
+  div.dataset.uid = ++linhaSeq;
+  const perfilOptions = modelo.perfis.map(p =>
+    `<option value="${p.id}" ${p.id === modelo.perfilPadraoId ? 'selected' : ''}>${escapeHtml(p.titulo)} — ${p.pesoGramas}g · ${p.tempoHoras}h</option>`
+  ).join('');
+  div.innerHTML = `
+    <button type="button" class="danger btn-remove-item" title="Remover da lista">✕</button>
+    ${modelo.imagem ? `<img class="thumb-lg" src="${escapeAttr(modelo.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
+    <div style="flex:1;min-width:280px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <div class="field" style="min-width:100%"><label>Nome do produto</label><input name="nome" value="${escapeAttr(modelo.nome)}" /></div>
+      <div class="field" style="min-width:100%"><label>Link</label><a href="${escapeAttr(safeUrl(modelo.link))}" target="_blank" rel="noopener">${escapeHtml(modelo.link)}</a></div>
+      <div class="field" style="min-width:100%"><label>Perfil de impressão</label><select name="perfil">${perfilOptions}</select>
+        <div class="muted materiais" style="margin-top:4px"></div>
+      </div>
+      <div class="field" style="min-width:100px"><label>Peso (g)</label><input name="pesoGramas" type="number" step="0.01" /></div>
+      <div class="field" style="min-width:100px"><label>Tempo (h)</label><input name="tempoHoras" type="number" step="0.01" /></div>
+      <div class="field"><label>Filamento</label>
+        <div class="search-select filamento-wrap">
+          <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
+          <div class="search-select-list"></div>
+        </div>
+      </div>
+      <div class="field"><label>Impressora</label><select name="impressoraId"><option value="">—</option>${impressorasCache.map(i => `<option value="${i.id}">${escapeHtml(i.nome)}</option>`).join('')}</select></div>
+      <div class="preview-custo" style="min-width:100%"></div>
+      <div class="field"><label>Preço de venda (R$)</label><input name="precoVenda" type="number" step="0.01" /></div>
+      <div class="acoes-produto"><button type="button" class="btn-criar-produto">Criar produto</button></div>
+    </div>
+  `;
+  div._filCtrl = wireSearchSelect(div.querySelector('.filamento-wrap'), filamentoItens(), () => div._filCtrl && atualizarPreview(div), '', 'Nenhum (R$' + CUSTO_FILAMENTO_PADRAO + '/kg)');
+  const perfilAtual = () => modelo.perfis.find(p => String(p.id) === div.querySelector('[name="perfil"]').value);
+  div.querySelector('[name="perfil"]').addEventListener('change', () => aplicarPerfil(div, perfilAtual()));
+  ['pesoGramas', 'tempoHoras', 'impressoraId'].forEach((nome) => {
+    div.querySelector(`[name="${nome}"]`).addEventListener('input', () => atualizarPreview(div));
+  });
+  div.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-usar-margem');
+    if (!btn) return;
+    e.preventDefault();
+    div.querySelector('[name="precoVenda"]').value = btn.dataset.valor;
+  });
+  div.querySelector('.btn-remove-item').addEventListener('click', () => div.remove());
+  div.querySelector('.btn-criar-produto').addEventListener('click', () => criarProduto(div, modelo, perfilAtual()));
+  document.getElementById('lista').appendChild(div);
+  if (perfilAtual()) aplicarPerfil(div, perfilAtual());
+  else atualizarPreview(div);
+}
+
+async function criarProduto(div, modelo, perfil) {
+  const nome = div.querySelector('[name="nome"]').value.trim();
+  if (!nome) { toast('Informe o nome do produto.', 'error'); return; }
+  const btn = div.querySelector('.btn-criar-produto');
+  btn.disabled = true;
+  try {
+    const produto = await apiPost('/api/produtos', { nome, modeloRef: modelo.link, imagemBase64: modelo.imagem || undefined });
+    await apiPost('/api/variacoes', {
+      produtoId: produto.id,
+      nome: 'Único',
+      descricao: perfil ? perfil.titulo : '',
+      pesoGramas: div.querySelector('[name="pesoGramas"]').value,
+      tempoHoras: div.querySelector('[name="tempoHoras"]').value,
+      precoVenda: div.querySelector('[name="precoVenda"]').value,
+      filamentoIdSugerido: div._filCtrl.getValue(),
+      impressoraIdSugerida: div.querySelector('[name="impressoraId"]').value
+    });
+    div.querySelector('.acoes-produto').innerHTML = `<span class="muted">Produto #${produto.id} criado — <a href="produtos.html">ver em Produtos</a></span>`;
+    toast('Produto criado!');
+  } catch (e) {
+    btn.disabled = false; // apiPost já mostrou o erro
+  }
+}
+
+document.getElementById('btn-buscar').addEventListener('click', async () => {
+  const textarea = document.getElementById('links');
+  const links = textarea.value.split(/\s+/).map(s => s.trim()).filter(Boolean);
+  if (!links.length) { toast('Cole ao menos um link.', 'error'); return; }
+  const btn = document.getElementById('btn-buscar');
+  btn.disabled = true;
+  const falhas = [];
+  // Um por vez, na ordem colada — evita martelar a API do MakerWorld com 10 requisições juntas.
+  for (let i = 0; i < links.length; i++) {
+    btn.textContent = `Buscando ${i + 1} de ${links.length}...`;
+    try {
+      addLinha(await apiPost('/api/makerworld/consultar', { url: links[i] }));
+    } catch (e) {
+      falhas.push(links[i]);
+    }
+  }
+  btn.disabled = false;
+  btn.textContent = 'Buscar modelos';
+  // Deixa no campo só o que falhou, pra corrigir e tentar de novo.
+  textarea.value = falhas.join('\n');
+});
+
+async function load() {
+  [filamentosCache, impressorasCache, paramsCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/params')
+  ]);
+}
+load();
+</script>
+</body>
+</html>

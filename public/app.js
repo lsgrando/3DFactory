@@ -407,6 +407,7 @@ const NAV_ITEMS = [
   { href: 'board.html', label: 'Board' },
   { href: 'produtos.html', label: 'Produtos' },
   { href: 'orcamento.html', label: 'Orçamentos' },
+  { href: 'orcamento-makerworld.html', label: 'Orçamento MakerWorld' },
   { href: 'financeiro.html', label: 'Financeiro' },
   {
     label: 'Cadastros',
