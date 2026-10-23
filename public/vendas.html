@@ -430,7 +430,7 @@ function renderResumoItem(div, valores) {
   const thumbHtml = produto && produto.imagem
     ? `<img class="thumb item-summary-thumb" loading="lazy" src="${escapeAttr(produto.imagem)}" />`
     : `<span class="thumb item-summary-thumb" style="display:inline-block"></span>`;
-  const subTxt = [cor, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
+  const subTxt = [cor && `Filamento: ${cor}`, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
   const o = valores.orcamento;
   const precoHtml = o
     ? `<span class="item-summary-price">${money(o.precoVenda * Number(quantidade))}</span>`
@@ -1049,7 +1049,7 @@ function renderFila() {
   document.getElementById('fila').innerHTML = fila.length ? `
     <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Peso/Tempo</th><th>Impressora</th><th>Ações</th></tr></thead>
     <tbody>${fila.map(({ p, it }) => `<tr>
-      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}${it.corFilamento ? `<div class="muted">Filamento: ${escapeHtml(it.corFilamento)}</div>` : ''}</td>
       <td>${it.orcamento ? somaPesoOrcamento(it.orcamento) + 'g / ' + it.orcamento.tempoHoras + 'h' : '—'}</td>
       <td>${impressoraSelect(p, it)}</td>
       <td>
@@ -1062,7 +1062,7 @@ function renderFila() {
   document.getElementById('imprimindo').innerHTML = imprimindo.length ? `
     <table><thead><tr><th>#</th><th>Cliente</th><th>Produto</th><th>Impressora</th><th>Início</th><th>Ações</th></tr></thead>
     <tbody>${imprimindo.map(({ p, it }) => `<tr>
-      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}</td>
+      <td>#${p.id}</td><td>${escapeHtml(p.cliente)}</td><td>${it.imagem ? `<img class="thumb" loading="lazy" src="${escapeAttr(it.imagem)}" /> ` : ''}${it.quantidade}x ${escapeHtml(it.descricao)}${it.variacao ? ` <span class="muted">(${escapeHtml(it.variacao)})</span>` : ''}${it.corFilamento ? `<div class="muted">Filamento: ${escapeHtml(it.corFilamento)}</div>` : ''}</td>
       <td>${it.impressoraId ? escapeHtml((impressorasCache.find(i=>i.id===it.impressoraId)||{}).nome) : '—'}</td>
       <td class="muted">${fmtDate(it.inicioImpressao)}</td>
       <td>

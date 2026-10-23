@@ -420,7 +420,7 @@ function renderResumoItem(div, valores) {
   const thumbHtml = produto && produto.imagem
     ? `<img class="thumb item-summary-thumb" loading="lazy" src="${escapeAttr(produto.imagem)}" />`
     : `<span class="thumb item-summary-thumb" style="display:inline-block"></span>`;
-  const subTxt = [cor, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
+  const subTxt = [cor && `Filamento: ${cor}`, variacao].filter(Boolean).map(escapeAttr).join(' · ') || '—';
   const o = valores.orcamento;
   const precoHtml = o
     ? `<span class="item-summary-price">${money(o.precoVenda * Number(quantidade))}</span>`

@@ -283,11 +283,11 @@ button.small { padding: 5px 10px; font-size: 12px; margin-right: 4px; margin-bot
 h3 { font-size: 14px; margin: 4px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
 .item-block { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; position: relative; }
 .item-block .btn-remove-item { position: absolute; top: 8px; right: 8px; padding: 4px 9px; font-size: 12px; }
-.item-summary { display: flex; align-items: center; gap: 12px; width: 100%; }
+.item-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; width: 100%; }
 .item-summary .item-summary-thumb { flex-shrink: 0; }
 .item-summary .item-summary-info { flex: 1; min-width: 0; }
 .item-summary .item-summary-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.item-summary .item-summary-sub { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-summary .item-summary-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .item-summary .item-summary-price { font-weight: 700; color: var(--primary-dark); white-space: nowrap; }
 .item-summary .item-summary-price.muted { font-weight: 400; }
 .item-summary .item-summary-actions { display: flex; gap: 6px; flex-shrink: 0; }
