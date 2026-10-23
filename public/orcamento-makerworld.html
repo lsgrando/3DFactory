@@ -190,6 +190,9 @@ async function criarProduto(div, modelo, perfil) {
       pesoGramas: porPeca('pesoGramas'),
       tempoHoras: porPeca('tempoHoras'),
       precoVenda: div.querySelector('[name="precoVenda"]').value,
+      // Tipo do rolo escolhido; sem rolo, o material do perfil fatiado no MakerWorld.
+      tipoFilamento: (filamentosCache.find(f => f.id === Number(div._filCtrl.getValue())) || {}).material
+        || (perfil && perfil.filamentos[0] ? perfil.filamentos[0].tipo : ''),
       filamentoIdSugerido: div._filCtrl.getValue(),
       impressoraIdSugerida: div.querySelector('[name="impressoraId"]').value
     });

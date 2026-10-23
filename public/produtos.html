@@ -13,6 +13,7 @@
 
   <div class="toolbar">
     <div class="field search"><input id="busca" placeholder="Buscar por nome..." /></div>
+    <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:14px;color:inherit"><input type="checkbox" id="filtro-sem-tipo" style="width:auto" /> Só sem tipo de filamento</label>
     <div class="row">
       <button type="button" class="secondary" onclick="abrirFiltroCatalogo()">📄 Exportar catálogo PDF</button>
       <button type="button" onclick="abrirNovoProduto()">+ Novo produto</button>
@@ -37,6 +38,7 @@ let filamentosCache = [];
 let categoriasCache = [];
 let impressorasCache = [];
 let paramsCache = {};
+let variacoesCache = [];
 let imagemBase64Atual = null;
 let produtoIdAtual = null;
 let variacaoBlockSeq = 0;
@@ -57,8 +59,28 @@ function calcularCustoVariacao(pesoGramas, tempoHoras, filamentoId, impressoraId
   return custoFilamento + custoEnergia;
 }
 
-function filamentoItens() {
-  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
+function filamentoItens(tipo) {
+  return filamentosCache.filter(f => filamentoEhDoTipo(f, tipo ? [tipo] : null))
+    .map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
+}
+// Tipos oferecidos = materiais dos filamentos cadastrados (+ o atual da variação, se não houver mais rolo dele).
+function tipoFilamentoOptions(selecionado) {
+  const tipos = [...new Set(filamentosCache.map(f => f.material.trim()).concat(selecionado ? [selecionado] : []))]
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  return '<option value="">— Selecione —</option>' + tipos.map(t =>
+    `<option value="${escapeAttr(t)}" ${t === selecionado ? 'selected' : ''}>${escapeHtml(t)}</option>`
+  ).join('');
+}
+// Remonta o seletor de filamento sugerido só com rolos do tipo escolhido; limpa a escolha se ela era de outro tipo.
+function wireFilamentoSugerido(block, valor) {
+  const tipo = block.querySelector('[name="tipoFilamento"]').value;
+  const filamento = filamentosCache.find(f => f.id === Number(valor));
+  if (filamento && !filamentoEhDoTipo(filamento, tipo ? [tipo] : null)) valor = '';
+  const wrap = block.querySelector('.variacao-filamento-wrap');
+  wrap.innerHTML = '<input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" /><div class="search-select-list"></div>';
+  block._filCtrl = null;
+  block._filCtrl = wireSearchSelect(wrap, filamentoItens(tipo), () => block._filCtrl && atualizarPreviewBloco(block), valor || '', 'Nenhum');
+  atualizarPreviewBloco(block);
 }
 function impressoraSugeridaOptions(selecionada) {
   return '<option value="">—</option>' + impressorasCache.map(i =>
@@ -110,17 +132,15 @@ function addVariacaoBlock(valores) {
     <div class="field"><label>Peso (g)</label><input name="pesoGramas" type="number" step="0.01" value="${valores.pesoGramas != null ? valores.pesoGramas : ''}" /></div>
     <div class="field"><label>Tempo (h)</label><input name="tempoHoras" type="number" step="0.01" value="${valores.tempoHoras != null ? valores.tempoHoras : ''}" /></div>
     <div class="field"><label>Preço de venda (R$)</label><input name="precoVenda" type="number" step="0.01" value="${valores.precoVenda != null ? valores.precoVenda : ''}" placeholder="opcional" /></div>
+    <div class="field"><label>Tipo de filamento</label><select name="tipoFilamento">${tipoFilamentoOptions(valores.tipoFilamento || '')}</select></div>
     <div class="field"><label>Filamento sugerido</label>
-      <div class="search-select variacao-filamento-wrap">
-        <input class="search-select-input" placeholder="Buscar filamento..." autocomplete="off" />
-        <div class="search-select-list"></div>
-      </div>
+      <div class="search-select variacao-filamento-wrap"></div>
     </div>
     <div class="field"><label>Impressora sugerida</label><select name="impressoraIdSugerida">${impressoraSugeridaOptions(valores.impressoraIdSugerida)}</select></div>
     <div class="field" style="min-width:100%"><label>Descrição / observação</label><input name="descricao" value="${escapeAttr(valores.descricao || '')}" /></div>
     <div class="preview-custo-bloco" style="min-width:100%"></div>
   `;
-  div._filCtrl = wireSearchSelect(div.querySelector('.variacao-filamento-wrap'), filamentoItens(), () => atualizarPreviewBloco(div), valores.filamentoIdSugerido || '', 'Nenhum');
+  div.querySelector('[name="tipoFilamento"]').addEventListener('change', () => wireFilamentoSugerido(div, div._filCtrl.getValue()));
   div.addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-usar-margem');
     if (!btn) return;
@@ -141,7 +161,7 @@ function addVariacaoBlock(valores) {
     div.querySelector(`[name="${nome}"]`).addEventListener('input', () => atualizarPreviewBloco(div));
   });
   document.getElementById('variacoes-container').appendChild(div);
-  atualizarPreviewBloco(div);
+  wireFilamentoSugerido(div, valores.filamentoIdSugerido || '');
 }
 
 function wireDropzoneImagem() {
@@ -219,6 +239,7 @@ function formProduto(titulo, valores, onSubmit) {
         tempoHoras,
         precoVenda,
         dimensoes: block.querySelector('[name="dimensoes"]').value,
+        tipoFilamento: block.querySelector('[name="tipoFilamento"]').value,
         filamentoIdSugerido: block._filCtrl ? block._filCtrl.getValue() : '',
         impressoraIdSugerida: block.querySelector('[name="impressoraIdSugerida"]').value,
         descricao: block.querySelector('[name="descricao"]').value
@@ -249,9 +270,18 @@ function nomeCategoria(categoriaId) {
   return c ? c.nome : 'Sem categoria';
 }
 
+// Produto sem variação ou com alguma variação sem tipo de filamento — Vendas não consegue restringir
+// os filamentos dele, então aparece marcado pra ajuste.
+function semTipoFilamento(p) {
+  const vs = variacoesCache.filter((v) => v.produtoId === p.id);
+  return !vs.length || vs.some((v) => !v.tipoFilamento);
+}
+
 function render() {
   const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const soSemTipo = document.getElementById('filtro-sem-tipo').checked;
   const lista = (!termo ? produtosCache : produtosCache.filter((p) => p.nome.toLowerCase().includes(termo)))
+    .filter((p) => !soSemTipo || semTipoFilamento(p))
     .slice()
     .sort((a, b) => nomeCategoria(a.categoriaId).localeCompare(nomeCategoria(b.categoriaId), 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR'));
   document.getElementById('grid').innerHTML = lista.length ? lista.map(p => `
@@ -260,6 +290,7 @@ function render() {
         ${p.imagem ? `<img class="thumb-lg" loading="lazy" src="${escapeAttr(p.imagem)}" />` : '<div class="thumb-lg" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">sem imagem</div>'}
         <h4>${escapeHtml(p.nome)}</h4>
         <div class="muted">${escapeHtml(nomeCategoria(p.categoriaId))}${p.ativo === false ? ' · Desativado' : ''}</div>
+        ${semTipoFilamento(p) ? '<div style="color:var(--red);font-size:12px">⚠ sem tipo de filamento</div>' : ''}
       </div>
       <div class="row" style="margin-top:6px">
         <button type="button" class="small secondary" onclick="event.stopPropagation(); alternarAtivoProduto(${p.id}, ${p.ativo === false})">${p.ativo === false ? 'Reativar' : 'Desativar'}</button>
@@ -269,6 +300,7 @@ function render() {
   `).join('') : '<p class="muted">Nenhum produto encontrado.</p>';
 }
 document.getElementById('busca').addEventListener('input', render);
+document.getElementById('filtro-sem-tipo').addEventListener('change', render);
 
 // Desativar tira o produto da seleção de novos pedidos (Vendas) e do catálogo exportado em PDF,
 // mas mantém o cadastro intacto — pedidos antigos que já usaram esse produto continuam normais,
@@ -327,8 +359,8 @@ async function excluirProduto(id) {
 window.excluirProduto = excluirProduto;
 
 async function load() {
-  [filamentosCache, impressorasCache, produtosCache, paramsCache, categoriasCache] = await Promise.all([
-    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/produtos'), apiGet('/api/params'), apiGet('/api/categorias-produto')
+  [filamentosCache, impressorasCache, produtosCache, paramsCache, categoriasCache, variacoesCache] = await Promise.all([
+    apiGet('/api/filamentos'), apiGet('/api/impressoras'), apiGet('/api/produtos'), apiGet('/api/params'), apiGet('/api/categorias-produto'), apiGet('/api/variacoes')
   ]);
   render();
 }

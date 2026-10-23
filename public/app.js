@@ -171,6 +171,27 @@ function dimensoesDoItem(item, variacoes) {
   const v = item.produtoId ? variacoes.find((x) => x.produtoId === item.produtoId && x.nome === item.variacao) : null;
   return (v && v.dimensoes) || item.dimensoes || '';
 }
+// Tipos de filamento (PLA, PETG...) aceitos num item: o da variação escolhida ou, sem variação
+// reconhecida, os de todas as variações do produto. null = sem restrição (item avulso ou produto
+// com variação ainda sem tipo cadastrado). Fatiamento em PETG e PLA muda tempo e preço, então
+// trocar de tipo exige cadastrar outra variação em Produtos.
+function tiposFilamentoPermitidos(produtoId, nomeVariacao, variacoes) {
+  if (!produtoId) return null;
+  const doProduto = variacoes.filter((v) => v.produtoId === Number(produtoId));
+  const escolhida = doProduto.find((v) => v.nome === nomeVariacao);
+  if (escolhida) return escolhida.tipoFilamento ? [escolhida.tipoFilamento] : null;
+  if (!doProduto.length || doProduto.some((v) => !v.tipoFilamento)) return null;
+  return [...new Set(doProduto.map((v) => v.tipoFilamento))];
+}
+function filamentoEhDoTipo(filamento, tipos) {
+  return !tipos || tipos.some((t) => t.trim().toLowerCase() === filamento.material.trim().toLowerCase());
+}
+// Cor digitada à mão (rolo fora do estoque) num seletor de filamento — ver wireSearchSelect.
+const PREFIXO_TEXTO_LIVRE = 'livre:';
+function ehIdFilamento(valor) {
+  return /^\d+$/.test(String(valor || ''));
+}
+
 function somaPesoOrcamento(orcamento) {
   return filamentosDoOrcamento(orcamento).reduce((s, f) => s + Number(f.pesoGramas || 0), 0);
 }
@@ -324,7 +345,10 @@ window.wireProdutoCombobox = wireProdutoCombobox;
 function normalizarBusca(s) {
   return (s || '').toString().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
-function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
+// opcoes.textoLivre: além dos itens, oferece usar o texto digitado como valor — volta como
+// PREFIXO_TEXTO_LIVRE + texto, pra quem chama distinguir de um item da lista.
+function wireSearchSelect(root, items, onSelect, valorInicial, placeholder, opcoes) {
+  const textoLivre = !!(opcoes && opcoes.textoLivre);
   const input = root.querySelector('.search-select-input');
   const list = root.querySelector('.search-select-list');
   let selecionado = (valorInicial === null || valorInicial === undefined) ? '' : String(valorInicial);
@@ -347,6 +371,7 @@ function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
 
   function rotulo(valor) {
     if (!valor) return '';
+    if (textoLivre && String(valor).startsWith(PREFIXO_TEXTO_LIVRE)) return String(valor).slice(PREFIXO_TEXTO_LIVRE.length);
     const it = items.find((x) => String(x.value) === String(valor));
     return it ? it.label : String(valor); // fallback: mostra o valor bruto se não achar mais na lista (ex.: item removido do estoque)
   }
@@ -363,7 +388,11 @@ function wireSearchSelect(root, items, onSelect, valorInicial, placeholder) {
       return `<div class="search-select-item" data-value="${escapeAttr(it.value)}">${swatch}${escapeHtml(it.label)}</div>`;
     }).join('') ||
       '<div class="muted" style="padding:6px 10px;font-size:13px">Nada encontrado.</div>';
-    list.innerHTML = vazio + itens;
+    const digitado = (filtro || '').trim();
+    const livre = textoLivre && digitado && !items.some((it) => normalizarBusca(it.label) === termo)
+      ? `<div class="search-select-item" data-value="${escapeAttr(PREFIXO_TEXTO_LIVRE + digitado)}">Usar "${escapeHtml(digitado)}" (fora do estoque, não entra no custo)</div>`
+      : '';
+    list.innerHTML = vazio + itens + livre;
     list.style.display = 'block';
   }
 

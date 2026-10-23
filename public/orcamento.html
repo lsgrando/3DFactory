@@ -61,6 +61,7 @@ function estimarFaixaPreco(v) {
 
 let impSelectCtrl = null;
 let filRows = [];
+let tiposFilamentoOrc = null; // tipos (PLA, PETG...) aceitos pelo item em orçamento — ver tiposFilamentoPermitidos
 
 // Adiciona uma linha de filamento (seletor + peso) no form de orçamento — uma peça pode usar
 // mais de um filamento (multicor/multimaterial), então o orçamento guarda uma lista.
@@ -78,12 +79,24 @@ function addLinhaFilamentoOrc(dados) {
     <button type="button" class="small danger btn-remover-filamento-linha">✕</button>
   `;
   document.getElementById('orc-filamentos-linhas').appendChild(row);
-  const ctrl = wireSearchSelect(row.querySelector('.orc-filamento-item'), filamentoItens(), () => {}, dados.filamentoId || '', 'Selecione um filamento');
+  const ctrl = wireSearchSelect(row.querySelector('.orc-filamento-item'), filamentoItens(tiposFilamentoOrc), () => {}, dados.filamentoId || '', 'Selecione um filamento');
   row.querySelector('.btn-remover-filamento-linha').addEventListener('click', () => {
     row.remove();
     filRows = filRows.filter((r) => r.row !== row);
   });
   filRows.push({ row, ctrl, pesoInput: row.querySelector('.orc-peso-item') });
+}
+
+// Troca os tipos aceitos e remonta as linhas, descartando rolos de outro tipo já escolhidos.
+function aplicarTiposFilamentoOrc(tipos) {
+  tiposFilamentoOrc = tipos;
+  const linhas = filRows.map(({ ctrl, pesoInput }) => {
+    const f = filamentosCache.find((x) => x.id === Number(ctrl.getValue()));
+    return { filamentoId: f && filamentoEhDoTipo(f, tipos) ? f.id : '', pesoGramas: pesoInput.value };
+  });
+  filRows.forEach(({ row }) => row.remove());
+  filRows = [];
+  (linhas.length ? linhas : [{}]).forEach((l) => addLinhaFilamentoOrc(l));
 }
 
 // A variação do catálogo é single-filamento — preenche só a primeira linha de filamento; o
@@ -93,6 +106,7 @@ function aplicarVariacaoPorId(variacaoId) {
   const v = variacoesCache.find((x) => x.id === Number(variacaoId));
   const faixaEl = document.getElementById('faixa-estimada');
   if (!v) { if (faixaEl) faixaEl.textContent = ''; return; }
+  aplicarTiposFilamentoOrc(v.tipoFilamento ? [v.tipoFilamento] : null);
   if (v.tempoHoras) form.tempoHoras.value = v.tempoHoras;
   if (filRows[0]) {
     if (v.pesoGramas) filRows[0].pesoInput.value = v.pesoGramas;
@@ -140,8 +154,8 @@ function wireVariacaoSelectIfPresent(produtoId) {
   wireSearchSelect(el, itens, (val) => { if (val) aplicarVariacaoPorId(val); }, '', '— Selecionar —');
 }
 
-function filamentoItens() {
-  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg, estoque ${f.estoqueAtualGramas}g)`, hex: f.corHex }));
+function filamentoItens(tipos) {
+  return filamentosCache.filter(f => filamentoEhDoTipo(f, tipos)).map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg, estoque ${f.estoqueAtualGramas}g)`, hex: f.corHex }));
 }
 function impressoraItens() {
   return impressorasCache.map(i => ({ value: i.id, label: `${i.nome} (${i.potenciaW}W)` }));
@@ -149,7 +163,7 @@ function impressoraItens() {
 
 function openOrcamentoForm(p, item) {
   produtoSelecionadoOrc = item.produtoId || null;
-  const filItens = filamentoItens();
+  tiposFilamentoOrc = tiposFilamentoPermitidos(item.produtoId, item.variacao, variacoesCache);
   const impItens = impressoraItens();
   document.getElementById('modal-content').innerHTML = `
     <h2 style="margin-top:0">Orçar pedido #${p.id} — ${escapeHtml(p.cliente)}</h2>
@@ -193,7 +207,11 @@ function openOrcamentoForm(p, item) {
   `;
   document.getElementById('modal-bg').style.display = 'flex';
   filRows = [];
-  addLinhaFilamentoOrc({});
+  // Já sugere os rolos da cor pedida pelo vendedor (os que existem no estoque e são do tipo aceito).
+  const rolosDaCor = String(item.corFilamento || '').split(' + ')
+    .map((cor) => filamentosCache.find((f) => `${f.material} ${f.cor}` === cor.trim() && filamentoEhDoTipo(f, tiposFilamentoOrc)))
+    .filter(Boolean);
+  (rolosDaCor.length ? rolosDaCor.map((f) => ({ filamentoId: f.id })) : [{}]).forEach((l) => addLinhaFilamentoOrc(l));
   document.getElementById('btn-add-filamento-orc').addEventListener('click', () => addLinhaFilamentoOrc({}));
   impSelectCtrl = wireSearchSelect(document.getElementById('ss-impressoraId'), impItens, (val) => {
     document.querySelector('#ss-impressoraId [name="impressoraId"]').value = val;
@@ -203,6 +221,7 @@ function openOrcamentoForm(p, item) {
   const produtosSelecionaveisOrc = produtosCache.filter((p) => p.ativo !== false || p.id === item.produtoId);
   wireProdutoCombobox(document.getElementById('produto-combobox-orc'), produtosSelecionaveisOrc, (produtoId) => {
     produtoSelecionadoOrc = produtoId;
+    aplicarTiposFilamentoOrc(tiposFilamentoPermitidos(produtoId, item.variacao, variacoesCache));
     document.getElementById('variacao-select-wrap').innerHTML = variacaoSelectHtml(produtoSelecionadoOrc);
     wireVariacaoSelectIfPresent(produtoSelecionadoOrc);
   }, item.produtoId);

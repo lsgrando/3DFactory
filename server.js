@@ -318,6 +318,10 @@ function sincronizarVariacaoDoItem({ produtoId, variacao, orcamento }) {
     impressoraIdSugerida: orcamento.impressoraSugeridaId,
     precoVenda: orcamento.precoVenda
   };
+  // Tipo de filamento só é preenchido quando a variação ainda não tem um — nunca troca o tipo de
+  // uma variação já cadastrada (PETG e PLA são fatiamentos diferentes).
+  const primeiroFilamento = filamentos.findById(filamentosOrc[0].filamentoId);
+  if (primeiroFilamento && !(existente && existente.tipoFilamento)) dados.tipoFilamento = primeiroFilamento.material;
   if (existente) {
     variacoes.update(existente.id, dados);
   } else {
@@ -1043,6 +1047,7 @@ async function api(req, res, pathname, query) {
         dimensoes: body.dimensoes || '',
         pesoGramas: body.pesoGramas,
         tempoHoras: body.tempoHoras,
+        tipoFilamento: body.tipoFilamento || '',
         filamentoIdSugerido: body.filamentoIdSugerido,
         impressoraIdSugerida: body.impressoraIdSugerida,
         precoVenda: body.precoVenda

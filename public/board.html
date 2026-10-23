@@ -64,11 +64,40 @@ function estimarFaixaPreco(v) {
   return { min: custoTotal * 2, max: custoTotal * 4 }; // margem de 100% a 300%
 }
 
-function corFilamentoItens() {
-  return filamentosCache.map(f => ({ value: `${f.material} ${f.cor}`, label: `${f.material} — ${f.cor}${f.marca ? ' (' + f.marca + ')' : ''}`, hex: f.corHex }));
+// Rolos que o item aceita (só os dos tipos permitidos) — `incluirId` mantém visível um rolo já
+// gravado no item mesmo que seja de outro tipo (pedido antigo), em vez de mostrar o id cru.
+function filamentoItens(tipos, incluirId) {
+  return filamentosCache.filter(f => filamentoEhDoTipo(f, tipos) || f.id === Number(incluirId))
+    .map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
 }
-function filamentoItens() {
-  return filamentosCache.map(f => ({ value: f.id, label: `${f.material}${f.marca ? ' ' + f.marca : ''} — ${f.cor} (R$${f.precoPorKg}/kg)`, hex: f.corHex }));
+// Texto de cor do item (resumo, PDF, produção) = as linhas de "Filamentos usados", no mesmo
+// formato "PLA Branco" que o antigo campo de cor gravava.
+function rotuloCorFilamento(valor) {
+  if (String(valor).startsWith(PREFIXO_TEXTO_LIVRE)) return String(valor).slice(PREFIXO_TEXTO_LIVRE.length);
+  const f = filamentosCache.find(x => x.id === Number(valor));
+  return f ? `${f.material} ${f.cor}` : '';
+}
+function atualizarCorDoItem(div) {
+  div.querySelector('[name="corFilamento"]').value = (div._filRows || [])
+    .map(({ ctrl }) => rotuloCorFilamento(ctrl.getValue())).filter(Boolean).join(' + ');
+}
+// Troca os tipos aceitos e remonta as linhas de filamento. `descartarOutros` limpa rolos de outro
+// tipo já escolhidos (ao escolher variação/produto); sem ele só muda o que aparece pra escolher.
+function aplicarTiposFilamento(div, tipos, descartarOutros) {
+  div._tiposFilamento = tipos;
+  if (!div._filRows) return;
+  const section = div.querySelector('.orcamento-item-section');
+  const linhas = div._filRows.map(({ ctrl, pesoInput }) => ({ filamentoId: ctrl.getValue(), pesoGramas: pesoInput.value }));
+  div._filRows.forEach(({ row }) => row.remove());
+  div._filRows = [];
+  linhas.forEach((l) => {
+    const f = ehIdFilamento(l.filamentoId) ? filamentosCache.find(x => x.id === Number(l.filamentoId)) : null;
+    if (descartarOutros && f && !filamentoEhDoTipo(f, tipos)) l.filamentoId = '';
+    addLinhaFilamento(div, section, l);
+  });
+  if (!div._filRows.length) addLinhaFilamento(div, section, {});
+  atualizarCorDoItem(div);
+  recalcularFaixaEstimada(div);
 }
 function impressoraItens() {
   return impressorasCache.map(i => ({ value: i.id, label: `${i.nome} (${i.potenciaW}W)` }));
@@ -82,12 +111,6 @@ function impressoraPadraoA1() {
 }
 function clienteItens() {
   return clientesCache.map(c => ({ value: c.id, label: c.nome }));
-}
-function corSugeridaDoProduto(produtoId) {
-  const variacao = variacoesCache.find(v => v.produtoId === produtoId && v.filamentoIdSugerido);
-  if (!variacao) return '';
-  const f = filamentosCache.find(f => f.id === variacao.filamentoIdSugerido);
-  return f ? `${f.material} ${f.cor}` : '';
 }
 function usuarioOptions() {
   const atual = window.currentUser ? window.currentUser.nome : '';
@@ -139,6 +162,7 @@ function aplicarVariacaoNoItem(div, variacaoId) {
   const v = variacoesCache.find(x => x.id === Number(variacaoId));
   if (!v) return;
   div.querySelector('[name="variacao"]').value = v.nome;
+  aplicarTiposFilamento(div, v.tipoFilamento ? [v.tipoFilamento] : null, true);
   if (v.dimensoes) div.querySelector('[name="dimensoes"]').value = v.dimensoes;
   if (v.tempoHoras) { const el = div.querySelector('.orc-tempo'); if (el) el.value = v.tempoHoras; }
   if (div._filRows && div._filRows[0]) {
@@ -156,7 +180,6 @@ function aplicarProdutoSelecionado(div, produtoId) {
   if (produto) {
     div.querySelector('[name="descricao"]').value = produto.descricao || produto.nome;
     div.querySelector('[name="dimensoes"]').value = produto.dimensoes || '';
-    if (div._corCtrl) div._corCtrl.setValue(corSugeridaDoProduto(produto.id));
     div.querySelector('[name="modeloRef"]').value = produto.modeloRef || '';
     div.querySelector('[name="pecaJaFeita"]').value = 'true';
     novoProdutoField.style.display = 'none';
@@ -165,6 +188,8 @@ function aplicarProdutoSelecionado(div, produtoId) {
   } else {
     novoProdutoField.style.display = '';
   }
+  // Antes de mostrarInfoProduto: se o produto tiver uma variação só, ela é aplicada lá e restringe mais.
+  aplicarTiposFilamento(div, tiposFilamentoPermitidos(produtoId, div.querySelector('[name="variacao"]').value, variacoesCache), true);
   mostrarInfoProduto(div, produtoId, true);
 }
 
@@ -207,11 +232,15 @@ function addLinhaFilamento(div, section, dados) {
     <button type="button" class="small danger btn-remover-filamento-linha">✕</button>
   `;
   section.querySelector('.orc-filamentos-linhas').appendChild(row);
-  const ctrl = wireSearchSelect(row.querySelector('.orc-filamento-item'), filamentoItens(), () => recalcularFaixaEstimada(div), dados.filamentoId || '', 'Selecione um filamento');
+  const ctrl = wireSearchSelect(row.querySelector('.orc-filamento-item'), filamentoItens(div._tiposFilamento, dados.filamentoId), () => {
+    atualizarCorDoItem(div);
+    recalcularFaixaEstimada(div);
+  }, dados.filamentoId || '', 'Selecione um filamento', { textoLivre: true });
   row.querySelector('.orc-peso-item').addEventListener('input', () => recalcularFaixaEstimada(div));
   row.querySelector('.btn-remover-filamento-linha').addEventListener('click', () => {
     row.remove();
     div._filRows = div._filRows.filter((r) => r.row !== row);
+    atualizarCorDoItem(div);
     recalcularFaixaEstimada(div);
   });
   div._filRows.push({ row, ctrl, pesoInput: row.querySelector('.orc-peso-item') });
@@ -295,9 +324,10 @@ function coletarOrcamentoInput(div) {
   if (!div._filRows || !div._impCtrl) return null;
   const section = div.querySelector('.orcamento-item-section');
   const tempoHoras = section.querySelector('.orc-tempo').value;
+  // Cor digitada à mão (fora do estoque) não tem preço por kg — fica só no texto de cor do item.
   const filamentos = div._filRows
     .map(({ ctrl, pesoInput }) => ({ filamentoId: ctrl.getValue(), pesoGramas: pesoInput.value }))
-    .filter((f) => f.filamentoId && f.pesoGramas);
+    .filter((f) => ehIdFilamento(f.filamentoId) && f.pesoGramas);
   if (!filamentos.length || !tempoHoras) return null;
   const body = {
     filamentos,
@@ -330,17 +360,30 @@ function previewOrcamentoAtual(div) {
   return { precoVenda, filamentos, tempoHoras: Number(input.tempoHoras) };
 }
 
+// Linhas de "Filamentos usados" de um item salvo: os rolos do orçamento (com peso) + as cores do
+// texto do item que não vieram de lá — rolo do estoque sem peso (item ainda não orçado) ou cor
+// digitada à mão. Pedidos antigos tinham cor e filamento em campos separados; aqui viram linhas.
+function linhasFilamentoDoItem(item) {
+  const linhas = filamentosDoOrcamento(item.orcamento).map((f) => ({ filamentoId: f.filamentoId, pesoGramas: f.pesoGramas }));
+  const jaListadas = linhas.map((l) => rotuloCorFilamento(l.filamentoId));
+  String(item.corFilamento || '').split(' + ').map((s) => s.trim()).filter(Boolean).forEach((cor) => {
+    if (jaListadas.includes(cor)) return;
+    const f = filamentosCache.find((x) => `${x.material} ${x.cor}` === cor);
+    linhas.push({ filamentoId: f ? f.id : PREFIXO_TEXTO_LIVRE + cor });
+    jaListadas.push(cor);
+  });
+  return linhas;
+}
+
 function wireOrcamentoFields(div, item) {
   const section = div.querySelector('.orcamento-item-section');
   const o = item.orcamento;
   section.innerHTML = orcamentoFieldsHtml(item);
   div._filRows = [];
-  const filamentosExistentes = filamentosDoOrcamento(o);
-  if (filamentosExistentes.length) {
-    filamentosExistentes.forEach((f) => addLinhaFilamento(div, section, f));
-  } else {
-    addLinhaFilamento(div, section, {});
-  }
+  div._tiposFilamento = tiposFilamentoPermitidos(item.produtoId, item.variacao, variacoesCache);
+  linhasFilamentoDoItem(item).forEach((f) => addLinhaFilamento(div, section, f));
+  if (!div._filRows.length) addLinhaFilamento(div, section, {});
+  atualizarCorDoItem(div);
   section.querySelector('.btn-add-filamento').addEventListener('click', () => addLinhaFilamento(div, section, {}));
   div._impCtrl = wireSearchSelect(section.querySelector('.orc-impressoraId'), impressoraItens(), () => recalcularFaixaEstimada(div), o ? o.impressoraSugeridaId : impressoraPadraoA1(), 'Selecione uma impressora');
   div._recalcularFaixa = () => recalcularFaixaEstimada(div);
@@ -515,13 +558,7 @@ function addItemBlock(valores) {
       <div class="field"><label>Dimensões desejadas (mm)</label><input name="dimensoes" placeholder="ex: 100x50x30" value="${escapeAttr(valores.dimensoes || '')}" /></div>
       <div class="field variacao-select-field" style="display:none"><label>Variação cadastrada</label><div class="search-select variacao-select-wrap"></div></div>
       <div class="field"><label>Variação</label><input name="variacao" placeholder="ex: P, M, G, altura +2cm" value="${escapeAttr(valores.variacao || '')}" /></div>
-      <div class="field"><label>Cor do filamento</label>
-        <div class="search-select cor-filamento-wrap">
-          <input type="hidden" name="corFilamento" />
-          <input class="search-select-input" placeholder="Buscar cor..." autocomplete="off" />
-          <div class="search-select-list"></div>
-        </div>
-      </div>
+      <input type="hidden" name="corFilamento" value="${escapeAttr(valores.corFilamento || '')}" />
       <div class="field"><label>Quantidade</label><input name="quantidade" type="number" min="1" value="${escapeAttr(valores.quantidade || 1)}" /></div>
       <div class="field chk-novo-produto-field"><label><input type="checkbox" class="chk-novo-produto" /> Cadastrar este produto no catálogo</label></div>
       <div class="novo-produto-fields" style="display:none;min-width:100%;flex-wrap:wrap;gap:10px;">
@@ -535,17 +572,13 @@ function addItemBlock(valores) {
       </div>
     </div>
   `;
-  // Monta a seção de orçamento ANTES do seletor de cor, pra que o auto-link cor→filamento
-  // (mais abaixo) já encontre div._filRows pronto mesmo no carregamento inicial do item. Roda
-  // pra todo item (novo ou já existente) — permite orçar já na criação do pedido.
+  // Roda pra todo item (novo ou já existente) — permite orçar já na criação do pedido. A cor do
+  // item sai das linhas de "Filamentos usados" montadas aqui (não há mais campo de cor separado).
   wireOrcamentoFields(div, valores);
-  div._corCtrl = wireSearchSelect(div.querySelector('.cor-filamento-wrap'), corFilamentoItens(), (val) => {
-    div.querySelector('[name="corFilamento"]').value = val;
-    if (val && div._filRows && div._filRows[0] && !div._filRows[0].ctrl.getValue()) {
-      const match = filamentosCache.find(f => `${f.material} ${f.cor}` === val);
-      if (match) div._filRows[0].ctrl.setValue(match.id);
-    }
-  }, valores.corFilamento || '', 'Digitar manualmente');
+  // Variação digitada à mão que bate com uma cadastrada também restringe os tipos de filamento.
+  div.querySelector('[name="variacao"]').addEventListener('change', () => {
+    aplicarTiposFilamento(div, tiposFilamentoPermitidos(div.dataset.produtoId, div.querySelector('[name="variacao"]').value, variacoesCache), false);
+  });
 
   div.querySelector('.btn-remover-item-detalhe').addEventListener('click', () => removerItem(div));
   div.querySelector('.btn-concluir-item').addEventListener('click', async () => {
